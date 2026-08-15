@@ -1,0 +1,26 @@
+{
+  "name": "crowdclaw-tradjs",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch server.ts",
+    "start": "NODE_ENV=production bun server.ts",
+    "check": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "measure-fn": "4.0.5",
+    "sqlite-zod-orm": "3.33.0",
+    "tailwindcss": "^4.1.10",
+    "tradjs": "4.2.1",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.2"
+  },
+  "tradjs": {
+    "serverOnly": ["sqlite-zod-orm", "measure-fn"]
+  }
+}
