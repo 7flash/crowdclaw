@@ -16,6 +16,10 @@ export async function GET(
       "content-security-policy":
         "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src data:; object-src 'none'; frame-ancestors 'self'",
       "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "permissions-policy":
+        "camera=(), microphone=(), geolocation=(), payment=()",
+      "cross-origin-resource-policy": "same-origin",
     },
   });
 }

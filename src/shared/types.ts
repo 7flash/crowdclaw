@@ -32,6 +32,7 @@ export type Project = {
   spentCredits: number;
   reservedCredits: number;
   onchainLamports: number;
+  creditedLamports: number;
   manualCredits: number;
   fundedCredits: number;
   availableCredits: number;

@@ -1,6 +1,8 @@
 import { hostname } from "node:os";
 import { measure } from "measure-fn";
+import { workerIntervalMs, workerLeaseMs } from "../config";
 import { projectsRepository } from "../db/project-repository";
+import { errorMessage, log } from "../log";
 import { syncProjectFunding } from "../services/funding-service";
 import { buildNext, planProject } from "./tick-project";
 
@@ -10,18 +12,24 @@ let running = false;
 let wakePending = false;
 let timer: ReturnType<typeof setInterval> | null = null;
 
-function intervalMs(): number {
-  return Math.max(
-    500,
-    Number.parseInt(process.env.WORKER_INTERVAL_MS || "2000", 10) || 2000,
-  );
-}
+const health = {
+  owner,
+  startedAt: 0,
+  lastTickStartedAt: 0,
+  lastTickFinishedAt: 0,
+  lastSuccessAt: 0,
+  lastErrorAt: 0,
+  lastError: "",
+  ticks: 0,
+};
 
-function leaseMs(): number {
-  return Math.max(
-    10_000,
-    Number.parseInt(process.env.WORKER_LEASE_MS || "60000", 10) || 60_000,
-  );
+export type AgentWorkerHealth = typeof health & {
+  started: boolean;
+  running: boolean;
+};
+
+export function getAgentWorkerHealth(): AgentWorkerHealth {
+  return { ...health, started, running };
 }
 
 async function runLoop(): Promise<void> {
@@ -30,6 +38,8 @@ async function runLoop(): Promise<void> {
     return;
   }
   running = true;
+  health.lastTickStartedAt = Date.now();
+  health.ticks += 1;
   try {
     await measure({ label: "worker.tick", owner }, async (m) => {
       await m("worker.recover-expired", () =>
@@ -56,13 +66,13 @@ async function runLoop(): Promise<void> {
               project.id,
               owner,
               ["planning"],
-              leaseMs(),
+              workerLeaseMs(),
             )
           )
             continue;
           try {
             await m("project.plan", () =>
-              planProject(project, owner, leaseMs()),
+              planProject(project, owner, workerLeaseMs()),
             );
           } finally {
             projectsRepository.releaseLease(project.id, owner);
@@ -89,13 +99,13 @@ async function runLoop(): Promise<void> {
               project.id,
               owner,
               ["queued"],
-              leaseMs(),
+              workerLeaseMs(),
             )
           )
             continue;
           try {
             await m("project.build", () =>
-              buildNext(project, owner, leaseMs()),
+              buildNext(project, owner, workerLeaseMs()),
             );
           } finally {
             projectsRepository.releaseLease(project.id, owner);
@@ -103,9 +113,14 @@ async function runLoop(): Promise<void> {
         }
       }
     });
+    health.lastSuccessAt = Date.now();
+    health.lastError = "";
   } catch (error) {
-    console.error("CrowdClaw worker tick failed", error);
+    health.lastErrorAt = Date.now();
+    health.lastError = errorMessage(error).slice(0, 500);
+    log("error", "worker.tick.failed", { owner, error });
   } finally {
+    health.lastTickFinishedAt = Date.now();
     running = false;
     if (wakePending) {
       wakePending = false;
@@ -126,11 +141,19 @@ export function wakeAgentWorker(): void {
 export function startAgentWorker(): () => void {
   if (started) return () => {};
   started = true;
+  health.startedAt = Date.now();
+  log("info", "worker.started", {
+    owner,
+    intervalMs: workerIntervalMs(),
+    leaseMs: workerLeaseMs(),
+  });
   void runLoop();
-  timer = setInterval(() => void runLoop(), intervalMs());
+  timer = setInterval(() => void runLoop(), workerIntervalMs());
   return () => {
     if (timer) clearInterval(timer);
     timer = null;
     started = false;
+    const expiredLeases = projectsRepository.expireOwnedLeases(owner);
+    log("info", "worker.stopped", { owner, expiredLeases });
   };
 }

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { Database, z } from "sqlite-zod-orm";
+import { databasePath } from "../config";
 
 const MilestoneSchema = z.object({
   title: z.string(),
@@ -33,6 +34,7 @@ const ProjectSchema = z.object({
   spentCredits: z.number().default(0),
   reservedCredits: z.number().default(0),
   onchainLamports: z.number().default(0),
+  creditedLamports: z.number().default(0),
   manualCredits: z.number().default(0),
   currentRunId: z.string().nullable().default(null),
   agentNote: z.string().default(""),
@@ -88,7 +90,17 @@ const EventSchema = z.object({
   createdAt: z.number().int(),
 });
 
-const rawPath = process.env.DATABASE_PATH || "./data/crowdclaw.sqlite";
+const FundingObservationSchema = z.object({
+  observationId: z.string(),
+  projectId: z.string(),
+  observedLamports: z.number().int(),
+  creditedLamports: z.number().int(),
+  deltaCreditedLamports: z.number().int(),
+  source: z.enum(["solana_balance", "dev"]),
+  createdAt: z.number().int(),
+});
+
+const rawPath = databasePath();
 const dbPath = rawPath === ":memory:" ? rawPath : resolve(rawPath);
 if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
 
@@ -97,4 +109,9 @@ export const db = new Database(dbPath, {
   artifacts: ArtifactSchema,
   runs: RunSchema,
   events: EventSchema,
+  fundingObservations: FundingObservationSchema,
 });
+
+export function probeDatabase(): void {
+  db.projects.select().limit(1).all();
+}

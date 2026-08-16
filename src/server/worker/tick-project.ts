@@ -5,7 +5,12 @@ import {
   callUntilComplete,
   type AgentUsage,
 } from "../agent/anthropic";
-import { parseAgentOutput, sealHtml, toMilestone } from "../agent/output";
+import {
+  parseAgentOutput,
+  sealHtml,
+  toMilestone,
+  validateArtifactHtml,
+} from "../agent/output";
 import { renderBuildPrompt, renderPlanPrompt } from "../agent/prompts";
 import { modelName } from "../config";
 import { projectsRepository } from "../db/project-repository";
@@ -122,6 +127,7 @@ export async function planProject(
         await m("db.plan.publish", () =>
           projectsRepository.setPlanningResult(
             project.id,
+            run.id,
             parsed.name || "untitled",
             parsed.summary || project.idea,
             milestones,
@@ -149,21 +155,19 @@ export async function planProject(
       preview: text,
       error: message,
     });
-    projectsRepository.setStatus(project.id, terminal ? "failed" : "planning", {
-      currentRunId: null,
-      streamPreview: "",
-      error: message,
-      agentNote: terminal
-        ? "Planning stopped after repeated failures."
-        : "Planning hit a transient failure; I’ll retry automatically.",
-      failureCount: failures,
-      retryAt: terminal ? 0 : Date.now() + backoff(latest.failureCount),
-    });
-    projectsRepository.event(
+    const failed = projectsRepository.failPlanning(
       project.id,
-      terminal ? "agent.failed" : "agent.retry",
+      run.id,
+      terminal,
       message,
+      terminal ? 0 : Date.now() + backoff(latest.failureCount),
     );
+    if (failed)
+      projectsRepository.event(
+        project.id,
+        terminal ? "agent.failed" : "agent.retry",
+        message,
+      );
   } finally {
     stopHeartbeat();
   }
@@ -249,8 +253,7 @@ export async function buildNext(
         writeProgress(text, usage, true);
 
         await m("db.status.validating", () =>
-          projectsRepository.setStatus(project.id, "validating", {
-            currentRunId: run.id,
+          projectsRepository.setRunStatus(project.id, run.id, "validating", {
             agentNote: "Validating the generated artifact before publishing…",
           }),
         );
@@ -259,8 +262,11 @@ export async function buildNext(
         );
         if (!parsed) throw new Error("could not parse build output");
         const sealed = await m("artifact.seal", () => sealHtml(parsed.code));
-        if (!sealed || sealed.length < 300 || !/<\/html>/i.test(sealed))
-          throw new Error("agent did not finish a playable HTML artifact");
+        const artifactIssues = await m("artifact.validate", () =>
+          validateArtifactHtml(sealed),
+        );
+        if (artifactIssues.length)
+          throw new Error(`artifact rejected: ${artifactIssues.join("; ")}`);
         if (!parsed.milestones[0])
           throw new Error("agent did not propose the next rolling milestone");
 
@@ -269,13 +275,13 @@ export async function buildNext(
           parsed.notes[parsed.notes.length - 1] ||
           `Completed ${milestone.title}.`;
         await m("db.status.publishing", () =>
-          projectsRepository.setStatus(project.id, "publishing", {
-            currentRunId: run.id,
+          projectsRepository.setRunStatus(project.id, run.id, "publishing", {
             agentNote: "Publishing the new playable version…",
           }),
         );
         const version = milestoneIndex + 1;
         const sha256 = createHash("sha256").update(sealed).digest("hex");
+        projectsRepository.updateRunUsage(run.id, { note });
         await m("artifact.publish", () =>
           projectsRepository.ship(
             project.id,
@@ -292,7 +298,6 @@ export async function buildNext(
             nextMilestone,
           ),
         );
-        projectsRepository.updateRunUsage(run.id, { note });
       },
     );
 
@@ -324,17 +329,19 @@ export async function buildNext(
       preview: text,
       error: message,
     });
-    projectsRepository.releaseReservation(
+    const released = projectsRepository.releaseReservation(
       project.id,
+      run.id,
       terminal ? "failed" : "queued",
       message,
       terminal ? 0 : Date.now() + backoff(latest.failureCount),
     );
-    projectsRepository.event(
-      project.id,
-      terminal ? "agent.failed" : "agent.retry",
-      message,
-    );
+    if (released)
+      projectsRepository.event(
+        project.id,
+        terminal ? "agent.failed" : "agent.retry",
+        message,
+      );
   } finally {
     stopHeartbeat();
   }

@@ -19,7 +19,11 @@ const uid = (prefix: string) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
 
 function projectFromRow(row: any): Project {
-  const onchainCredits = Number(row.onchainLamports || 0) / lamportsPerCredit();
+  const creditedLamports = Math.max(
+    Number(row.creditedLamports || 0),
+    Number(row.onchainLamports || 0),
+  );
+  const onchainCredits = creditedLamports / lamportsPerCredit();
   const fundedCredits = round2(onchainCredits + Number(row.manualCredits || 0));
   const spentCredits = Number(row.spentCredits || 0);
   const reservedCredits = Number(row.reservedCredits || 0);
@@ -36,6 +40,7 @@ function projectFromRow(row: any): Project {
     spentCredits,
     reservedCredits,
     onchainLamports: Number(row.onchainLamports || 0),
+    creditedLamports,
     manualCredits: Number(row.manualCredits || 0),
     fundedCredits,
     availableCredits: round2(
@@ -192,6 +197,7 @@ export const projectsRepository = {
       spentCredits: 0,
       reservedCredits: 0,
       onchainLamports: 0,
+      creditedLamports: 0,
       manualCredits: 0,
       currentRunId: null,
       agentNote: "Reading the idea and planning the first playable milestones…",
@@ -209,16 +215,41 @@ export const projectsRepository = {
     return projectFromRow(row);
   },
 
-  setFunding(projectId: string, lamports: number, error = ""): Project | null {
-    let result: Project | null = null;
+  setFunding(
+    projectId: string,
+    lamports: number,
+    error = "",
+  ): { project: Project; newlyCreditedLamports: number } | null {
+    let result: { project: Project; newlyCreditedLamports: number } | null =
+      null;
     db.transaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
-      row.onchainLamports = Math.max(0, Math.floor(lamports));
+      const observed = Math.max(0, Math.floor(lamports));
+      const previousObserved = Math.max(0, Number(row.onchainLamports || 0));
+      const previousCredited = Math.max(
+        Number(row.creditedLamports || 0),
+        previousObserved,
+      );
+      const credited = Math.max(previousCredited, observed);
+      const delta = Math.max(0, credited - previousCredited);
+      row.onchainLamports = observed;
+      row.creditedLamports = credited;
       row.lastFundingSyncAt = now();
       row.fundingError = error;
       row.updatedAt = now();
-      result = projectFromRow(row);
+      if (observed !== previousObserved || delta > 0) {
+        db.fundingObservations.insert({
+          observationId: uid("fo"),
+          projectId,
+          observedLamports: observed,
+          creditedLamports: credited,
+          deltaCreditedLamports: delta,
+          source: "solana_balance",
+          createdAt: now(),
+        });
+      }
+      result = { project: projectFromRow(row), newlyCreditedLamports: delta };
     });
     return result;
   },
@@ -247,6 +278,7 @@ export const projectsRepository = {
 
   setPlanningResult(
     projectId: string,
+    runId: string,
     name: string,
     summary: string,
     milestones: Milestone[],
@@ -255,6 +287,11 @@ export const projectsRepository = {
     db.transaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) throw new Error("project not found");
+      if (row.currentRunId !== runId)
+        throw new Error("planning run is no longer current");
+      const run = rowByRunId(runId);
+      if (!run || run.status !== "running")
+        throw new Error("planning run is no longer active");
       row.name = name || "untitled";
       row.summary = summary || row.idea;
       row.milestones = milestones;
@@ -274,6 +311,8 @@ export const projectsRepository = {
           ? "queued"
           : "waiting_funds";
       row.updatedAt = now();
+      run.status = "complete";
+      run.finishedAt = now();
       result = projectFromRow(row);
     });
     if (!result) throw new Error("failed to save project plan");
@@ -309,6 +348,57 @@ export const projectsRepository = {
       if (patch.retryAt !== undefined) row.retryAt = patch.retryAt;
       if (patch.failureCount !== undefined)
         row.failureCount = patch.failureCount;
+      row.updatedAt = now();
+      result = projectFromRow(row);
+    });
+    return result;
+  },
+
+  setRunStatus(
+    projectId: string,
+    runId: string,
+    status: ProjectStatus,
+    patch: Partial<{
+      agentNote: string;
+      streamPreview: string;
+      error: string;
+    }> = {},
+  ): Project | null {
+    let result: Project | null = null;
+    db.transaction(() => {
+      const row = rowByProjectId(projectId);
+      if (!row || row.currentRunId !== runId) return;
+      row.status = status;
+      if (patch.agentNote !== undefined) row.agentNote = patch.agentNote;
+      if (patch.streamPreview !== undefined)
+        row.streamPreview = patch.streamPreview;
+      if (patch.error !== undefined) row.error = patch.error;
+      row.updatedAt = now();
+      result = projectFromRow(row);
+    });
+    return result;
+  },
+
+  failPlanning(
+    projectId: string,
+    runId: string,
+    terminal: boolean,
+    error: string,
+    retryAt: number,
+  ): Project | null {
+    let result: Project | null = null;
+    db.transaction(() => {
+      const row = rowByProjectId(projectId);
+      if (!row || row.currentRunId !== runId) return;
+      row.currentRunId = null;
+      row.streamPreview = "";
+      row.error = error.slice(0, 500);
+      row.failureCount = Number(row.failureCount || 0) + 1;
+      row.retryAt = terminal ? 0 : retryAt;
+      row.status = terminal ? "failed" : "planning";
+      row.agentNote = terminal
+        ? "Planning stopped after repeated failures."
+        : "Planning hit a transient failure; I’ll retry automatically.";
       row.updatedAt = now();
       result = projectFromRow(row);
     });
@@ -379,7 +469,13 @@ export const projectsRepository = {
     db.transaction(() => {
       const project = rowByProjectId(projectId);
       const run = rowByRunId(runId);
-      if (!project || !run) return;
+      if (
+        !project ||
+        !run ||
+        project.currentRunId !== runId ||
+        run.status !== "running"
+      )
+        return;
       const clipped = preview.slice(-1800);
       project.streamPreview = clipped;
       if (note) project.agentNote = note.slice(0, 220);
@@ -402,6 +498,11 @@ export const projectsRepository = {
       if (!row) throw new Error("project not found");
       if (Number(row.done || 0) !== expectedDone)
         throw new Error("project advanced while build was running");
+      if (row.currentRunId !== artifact.runId)
+        throw new Error("build run is no longer current");
+      const run = rowByRunId(artifact.runId);
+      if (!run || run.status !== "running")
+        throw new Error("build run is no longer active");
       const project = projectFromRow(row);
       const current = project.milestones[expectedDone];
       if (!current) throw new Error("milestone missing");
@@ -439,6 +540,8 @@ export const projectsRepository = {
           ? "queued"
           : "waiting_funds";
       row.updatedAt = now();
+      run.status = "complete";
+      run.finishedAt = now();
       result = projectFromRow(row);
     });
     if (!result) throw new Error("failed to publish artifact");
@@ -447,6 +550,7 @@ export const projectsRepository = {
 
   releaseReservation(
     projectId: string,
+    runId: string,
     status: ProjectStatus,
     error: string,
     retryAt = 0,
@@ -454,7 +558,7 @@ export const projectsRepository = {
     let result: Project | null = null;
     db.transaction(() => {
       const row = rowByProjectId(projectId);
-      if (!row) return;
+      if (!row || row.currentRunId !== runId) return;
       const project = projectFromRow(row);
       const index = project.done;
       const miles = [...project.milestones];
@@ -524,7 +628,7 @@ export const projectsRepository = {
     let result: AgentRun | null = null;
     db.transaction(() => {
       const row = rowByRunId(runId);
-      if (!row) return;
+      if (!row || row.status !== "running") return;
       if (usage.inputTokens !== undefined)
         row.inputTokens = Math.max(0, Math.floor(usage.inputTokens));
       if (usage.outputTokens !== undefined)
@@ -571,6 +675,10 @@ export const projectsRepository = {
     db.transaction(() => {
       const row = rowByRunId(runId);
       if (!row) return;
+      if (row.status !== "running") {
+        result = runFromRow(row);
+        return;
+      }
       row.status = status;
       row.finishedAt = now();
       if (patch.inputTokens !== undefined) row.inputTokens = patch.inputTokens;
@@ -684,6 +792,20 @@ export const projectsRepository = {
       row.leaseUntil = 0;
       row.updatedAt = now();
     });
+  },
+
+  expireOwnedLeases(owner: string): number {
+    let expired = 0;
+    db.transaction(() => {
+      const rows = db.projects.select().all() as any[];
+      for (const row of rows) {
+        if (row.leaseOwner !== owner) continue;
+        row.leaseUntil = 0;
+        row.updatedAt = now();
+        expired += 1;
+      }
+    });
+    return expired;
   },
 
   recoverExpiredWork(): number {

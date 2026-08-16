@@ -1,0 +1,8 @@
+.git
+.gitignore
+.env
+node_modules
+data/*.sqlite
+data/*.sqlite-*
+*.zip
+.DS_Store
