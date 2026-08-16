@@ -89,6 +89,7 @@ function runFromRow(row: any): AgentRun {
     lastContextTokens,
     contextWindow: window,
     remainingContextTokens: Math.max(0, window - lastContextTokens),
+    usageEstimated: Boolean(row.usageEstimated),
     streamChars: Number(row.streamChars || 0),
     preview: row.preview || "",
     note: row.note || "",
@@ -602,6 +603,7 @@ export const projectsRepository = {
       cacheReadInputTokens: 0,
       lastContextTokens: 0,
       contextWindow: contextWindow(),
+      usageEstimated: false,
       streamChars: 0,
       preview: "",
       note: "",
@@ -620,6 +622,7 @@ export const projectsRepository = {
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
       lastContextTokens: number;
+      usageEstimated: boolean;
       streamChars: number;
       preview: string;
       note: string;
@@ -648,6 +651,8 @@ export const projectsRepository = {
           0,
           Math.floor(usage.lastContextTokens),
         );
+      if (usage.usageEstimated !== undefined)
+        row.usageEstimated = Boolean(usage.usageEstimated);
       if (usage.streamChars !== undefined)
         row.streamChars = Math.max(0, Math.floor(usage.streamChars));
       if (usage.preview !== undefined) row.preview = usage.preview.slice(-1800);
@@ -666,6 +671,7 @@ export const projectsRepository = {
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
       lastContextTokens: number;
+      usageEstimated: boolean;
       preview: string;
       note: string;
       error: string;
@@ -690,6 +696,8 @@ export const projectsRepository = {
         row.cacheReadInputTokens = patch.cacheReadInputTokens;
       if (patch.lastContextTokens !== undefined)
         row.lastContextTokens = patch.lastContextTokens;
+      if (patch.usageEstimated !== undefined)
+        row.usageEstimated = Boolean(patch.usageEstimated);
       if (patch.preview !== undefined) row.preview = patch.preview.slice(-1800);
       if (patch.note !== undefined) row.note = patch.note.slice(0, 220);
       if (patch.error !== undefined) row.error = patch.error.slice(0, 500);

@@ -11,7 +11,6 @@ export type ProjectViewProps = {
   selectedVersion: number | null;
   artifactCode: string | null;
   artifactCodeVersion: number | null;
-  onHome: () => void;
   onTab: (tab: Tab) => void;
   onVersion: (version: number) => void;
   onCopyWallet: () => void;
@@ -55,13 +54,13 @@ export function ProjectView(props: ProjectViewProps) {
   return (
     <div className="mx-auto max-w-[920px] px-5 pb-[70px]">
       <header className="flex items-start gap-[10px] pt-[10px] pb-[14px]">
-        <button
-          className="cc-btn cc-btn-ghost"
-          onClick={props.onHome}
+        <a
+          className="cc-btn cc-btn-ghost no-underline"
+          href="/"
           aria-label="Back"
         >
           ←
-        </button>
+        </a>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
             <div className="font-display text-[clamp(1.5rem,4vw,2.1rem)] font-extrabold uppercase leading-[.9] tracking-[-.015em]">
@@ -182,19 +181,23 @@ export function ProjectView(props: ProjectViewProps) {
           <div className="mt-5 grid grid-cols-2 gap-2">
             <Metric
               label="input"
-              value={tokens(currentRun?.inputTokens || 0)}
+              value={`${currentRun?.usageEstimated ? "~" : ""}${tokens(currentRun?.inputTokens || 0)}`}
               suffix="tok"
             />
             <Metric
               label="output"
-              value={`${currentRun?.status === "running" && currentRun.outputTokens === 0 && currentRun.streamChars ? "~" : ""}${tokens(liveOutputTokens)}`}
+              value={`${currentRun?.usageEstimated || (currentRun?.status === "running" && currentRun.outputTokens === 0 && currentRun.streamChars) ? "~" : ""}${tokens(liveOutputTokens)}`}
               suffix="tok"
             />
           </div>
 
           <div className="mt-4">
             <div className="flex justify-between font-data text-[10px] text-[var(--dimmer)]">
-              <span>run context</span>
+              <span>
+                {currentRun?.usageEstimated
+                  ? "estimated context"
+                  : "run context"}
+              </span>
               <span>
                 {tokens(contextUsed)} / {tokens(contextWindow)}
               </span>

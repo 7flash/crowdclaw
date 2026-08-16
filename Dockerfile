@@ -8,9 +8,10 @@ COPY . .
 ENV NODE_ENV=production \
     PORT=3000 \
     DATABASE_PATH=/data/crowdclaw.sqlite \
+    WORKSPACE_ROOT=/data/workspaces \
     HOME=/data/home
 
-RUN mkdir -p /data/home
+RUN mkdir -p /data/home /data/workspaces
 VOLUME ["/data"]
 EXPOSE 3000
 

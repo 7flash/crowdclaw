@@ -6,6 +6,7 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_PATH: /data/crowdclaw.sqlite
+      WORKSPACE_ROOT: /data/workspaces
       EMBEDDED_WORKER: "0"
       HOME: /data/home
     ports:
@@ -27,6 +28,7 @@ services:
     environment:
       NODE_ENV: production
       DATABASE_PATH: /data/crowdclaw.sqlite
+      WORKSPACE_ROOT: /data/workspaces
       EMBEDDED_WORKER: "0"
       HOME: /data/home
     volumes:

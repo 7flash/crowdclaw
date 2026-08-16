@@ -1,17 +1,12 @@
 import { createHash } from "node:crypto";
 import { measure } from "measure-fn";
-import {
-  callOnce,
-  callUntilComplete,
-  type AgentUsage,
-} from "../agent/anthropic";
+import { buildMilestone, planGame, type AgentUsage } from "../agent/jsx-agent";
 import {
   parseAgentOutput,
   sealHtml,
   toMilestone,
   validateArtifactHtml,
 } from "../agent/output";
-import { renderBuildPrompt, renderPlanPrompt } from "../agent/prompts";
 import { modelName } from "../config";
 import { projectsRepository } from "../db/project-repository";
 import type { Project } from "../../shared/types";
@@ -33,15 +28,16 @@ function usagePatch(usage: AgentUsage) {
     cacheCreationInputTokens: usage.cacheCreationInputTokens,
     cacheReadInputTokens: usage.cacheReadInputTokens,
     lastContextTokens: usage.lastContextTokens,
+    usageEstimated: usage.estimated,
   };
 }
 
 function progressWriter(projectId: string, runId: string) {
   let lastWrite = 0;
   let lastLength = 0;
-  return (text: string, usage: AgentUsage, force = false) => {
+  return (text: string, note: string, usage: AgentUsage, force = false) => {
     const t = Date.now();
-    if (!force && t - lastWrite < 350 && text.length - lastLength < 240) return;
+    if (!force && t - lastWrite < 250 && text.length - lastLength < 80) return;
     lastWrite = t;
     lastLength = text.length;
     const preview = text.slice(-1800);
@@ -49,8 +45,9 @@ function progressWriter(projectId: string, runId: string) {
       ...usagePatch(usage),
       streamChars: text.length,
       preview,
+      note,
     });
-    projectsRepository.updateLiveRun(projectId, runId, preview);
+    projectsRepository.updateLiveRun(projectId, runId, preview, note);
   };
 }
 
@@ -92,31 +89,27 @@ export async function planProject(
 
   let usage: AgentUsage | null = null;
   let text = "";
-  const writeProgress = progressWriter(project.id, run.id);
 
   try {
     await measure(
       { label: "agent.project.plan", projectId: project.id, runId: run.id },
       async (m) => {
-        const prompt = await m("jsxai.prompt.render", () =>
-          renderPlanPrompt(project.idea),
-        );
-        if (!prompt) throw new Error("failed to render planning prompt");
-        const result = await m("anthropic.plan", () =>
-          callOnce(
-            prompt.system,
-            [{ role: "user", content: prompt.user }],
-            (nextText, nextUsage) => {
-              text = nextText;
-              usage = nextUsage;
-              writeProgress(nextText, nextUsage);
-            },
-          ),
-        );
+        const result = await m("jsx-ai.plan", () => planGame(project.idea));
         if (!result) throw new Error("planning returned no result");
         text = result.text;
         usage = result.usage;
-        writeProgress(text, usage, true);
+        projectsRepository.updateRunUsage(run.id, {
+          ...usagePatch(result.usage),
+          streamChars: text.length,
+          preview: text,
+          note: "Initial roadmap drafted.",
+        });
+        projectsRepository.updateLiveRun(
+          project.id,
+          run.id,
+          text,
+          "Initial roadmap drafted.",
+        );
 
         const parsed = await m("agent.plan.parse", () =>
           parseAgentOutput(text),
@@ -139,6 +132,7 @@ export async function planProject(
     projectsRepository.finishRun(run.id, "complete", {
       ...(usage ? usagePatch(usage) : {}),
       preview: text,
+      note: "Initial roadmap published.",
     });
     projectsRepository.event(
       project.id,
@@ -194,7 +188,7 @@ export async function buildNext(
     model: modelName(),
   });
   let usage: AgentUsage | null = null;
-  let text = "";
+  let activityText = "";
   const writeProgress = progressWriter(project.id, run.id);
   const stopHeartbeat = heartbeat(project.id, owner, leaseMs);
 
@@ -222,58 +216,35 @@ export async function buildNext(
           projectsRepository.artifacts(project.id),
         );
         const previous = artifacts?.[artifacts.length - 1];
-        const prompt = await m("jsxai.prompt.render", () =>
-          renderBuildPrompt(reserved, milestone, previous?.html),
-        );
-        if (!prompt) throw new Error("failed to render build prompt");
 
-        const result = await m("anthropic.build", () =>
-          callUntilComplete(
-            prompt.system,
-            prompt.user,
-            (nextText, nextUsage) => {
-              text = nextText;
-              usage = nextUsage;
-              const parsed = parseAgentOutput(nextText);
-              const note = parsed.notes[parsed.notes.length - 1] || "";
-              if (note)
-                projectsRepository.updateLiveRun(
-                  project.id,
-                  run.id,
-                  nextText.slice(-1800),
-                  note,
-                );
-              writeProgress(nextText, nextUsage);
-            },
-          ),
+        const result = await m("jsx-ai.tool-loop", () =>
+          buildMilestone(reserved, milestone, previous?.html, (activity) => {
+            activityText = activity.text;
+            usage = activity.usage;
+            writeProgress(activity.text, activity.note, activity.usage);
+          }),
         );
         if (!result) throw new Error("build returned no result");
-        text = result.text;
         usage = result.usage;
-        writeProgress(text, usage, true);
+        activityText = result.activityText;
+        writeProgress(activityText, result.summary, result.usage, true);
 
         await m("db.status.validating", () =>
           projectsRepository.setRunStatus(project.id, run.id, "validating", {
-            agentNote: "Validating the generated artifact before publishing…",
+            agentNote: "Validating index.html before publishing…",
           }),
         );
-        const parsed = await m("agent.build.parse", () =>
-          parseAgentOutput(text),
-        );
-        if (!parsed) throw new Error("could not parse build output");
-        const sealed = await m("artifact.seal", () => sealHtml(parsed.code));
+
+        const sealed = await m("artifact.seal", () => sealHtml(result.html));
         const artifactIssues = await m("artifact.validate", () =>
           validateArtifactHtml(sealed),
         );
         if (artifactIssues.length)
           throw new Error(`artifact rejected: ${artifactIssues.join("; ")}`);
-        if (!parsed.milestones[0])
+        if (!result.nextMilestone.title)
           throw new Error("agent did not propose the next rolling milestone");
 
-        const nextMilestone = toMilestone(parsed.milestones[0]);
-        const note =
-          parsed.notes[parsed.notes.length - 1] ||
-          `Completed ${milestone.title}.`;
+        const nextMilestone = toMilestone(result.nextMilestone);
         await m("db.status.publishing", () =>
           projectsRepository.setRunStatus(project.id, run.id, "publishing", {
             agentNote: "Publishing the new playable version…",
@@ -281,7 +252,10 @@ export async function buildNext(
         );
         const version = milestoneIndex + 1;
         const sha256 = createHash("sha256").update(sealed).digest("hex");
-        projectsRepository.updateRunUsage(run.id, { note });
+        projectsRepository.updateRunUsage(run.id, {
+          ...usagePatch(result.usage),
+          note: result.summary,
+        });
         await m("artifact.publish", () =>
           projectsRepository.ship(
             project.id,
@@ -303,7 +277,7 @@ export async function buildNext(
 
     projectsRepository.finishRun(run.id, "complete", {
       ...(usage ? usagePatch(usage) : {}),
-      preview: text,
+      preview: activityText,
     });
     projectsRepository.event(
       project.id,
@@ -326,7 +300,7 @@ export async function buildNext(
     const terminal = failures >= MAX_FAILURES;
     projectsRepository.finishRun(run.id, "failed", {
       ...(usage ? usagePatch(usage) : {}),
-      preview: text,
+      preview: activityText,
       error: message,
     });
     const released = projectsRepository.releaseReservation(

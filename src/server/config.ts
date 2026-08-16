@@ -8,15 +8,26 @@ export function lamportsPerCredit(): number {
 }
 
 export function contextWindow(): number {
-  return positiveInt("ANTHROPIC_CONTEXT_WINDOW", 200_000);
+  return positiveInt(
+    "GAME_CONTEXT_WINDOW",
+    positiveInt("ANTHROPIC_CONTEXT_WINDOW", 200_000),
+  );
 }
 
 export function modelName(): string {
-  return process.env.ANTHROPIC_MODEL?.trim() || "claude-sonnet-4-6";
+  return (
+    process.env.GAME_MODEL?.trim() ||
+    process.env.ANTHROPIC_MODEL?.trim() ||
+    "gemini-3-flash-preview"
+  );
 }
 
-export function anthropicMaxTokens(): number {
-  return positiveInt("ANTHROPIC_MAX_TOKENS", 1000);
+export function agentMaxTokens(): number {
+  return positiveInt("AGENT_MAX_TOKENS", 14_000, 512);
+}
+
+export function agentMaxSteps(): number {
+  return positiveInt("AGENT_MAX_STEPS", 8, 1);
 }
 
 export function agentRequestTimeoutMs(): number {
@@ -62,10 +73,8 @@ export function runtimeConfigIssues(role: "web" | "worker"): string[] {
   const production = process.env.NODE_ENV === "production";
   const needsAgent = role === "worker" || embeddedWorkerEnabled();
 
-  if (needsAgent && !process.env.ANTHROPIC_API_KEY?.trim()) {
-    issues.push(
-      "ANTHROPIC_API_KEY is required when an agent worker is enabled",
-    );
+  if (needsAgent && !modelName()) {
+    issues.push("GAME_MODEL is required when an agent worker is enabled");
   }
   if (production && devFundingEnabled()) {
     issues.push("ALLOW_DEV_FUNDING must be 0 in production");

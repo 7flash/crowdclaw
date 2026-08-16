@@ -14,46 +14,63 @@ async function readJson<T>(response: Response): Promise<T> {
   return (await response.json()) as T;
 }
 
-export async function listProjects(): Promise<Project[]> {
+export async function listProjects(signal?: AbortSignal): Promise<Project[]> {
   return readJson<Project[]>(
-    await fetch("/api/projects", { cache: "no-store" }),
+    await fetch("/api/projects", { cache: "no-store", signal }),
   );
 }
 
-export async function createProject(idea: string): Promise<Project> {
+export async function createProject(
+  idea: string,
+  signal?: AbortSignal,
+): Promise<Project> {
   const body = await readJson<{ project: Project }>(
     await fetch("/api/projects", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ idea }),
+      signal,
     }),
   );
   return body.project;
 }
 
-export async function getProject(id: string): Promise<ProjectBundle> {
+export async function getProject(
+  id: string,
+  signal?: AbortSignal,
+): Promise<ProjectBundle> {
   return readJson<ProjectBundle>(
     await fetch(`/api/projects/${encodeURIComponent(id)}`, {
       cache: "no-store",
+      signal,
     }),
   );
 }
 
-export async function syncFunding(id: string): Promise<Project> {
+export async function syncFunding(
+  id: string,
+  signal?: AbortSignal,
+): Promise<Project> {
   const body = await readJson<{ project: Project }>(
     await fetch(`/api/projects/${encodeURIComponent(id)}/sync`, {
       method: "POST",
+      signal,
     }),
   );
   return body.project;
 }
 
-export async function devFund(id: string, credits = 2): Promise<Project> {
+export async function devFund(
+  id: string,
+  credits = 2,
+  signal?: AbortSignal,
+): Promise<Project> {
   const body = await readJson<{ project: Project }>(
     await fetch(`/api/projects/${encodeURIComponent(id)}/dev-fund`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ credits }),
+      signal,
     }),
   );
   return body.project;
@@ -62,10 +79,11 @@ export async function devFund(id: string, credits = 2): Promise<Project> {
 export async function getArtifactCode(
   projectId: string,
   version: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetch(
     `/artifacts/${encodeURIComponent(projectId)}/${version}`,
-    { cache: "force-cache" },
+    { cache: "force-cache", signal },
   );
   if (!response.ok)
     throw new Error(`artifact request failed (${response.status})`);

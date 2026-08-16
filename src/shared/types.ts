@@ -78,6 +78,7 @@ export type AgentRun = {
   lastContextTokens: number;
   contextWindow: number;
   remainingContextTokens: number;
+  usageEstimated: boolean;
   streamChars: number;
   preview: string;
   note: string;

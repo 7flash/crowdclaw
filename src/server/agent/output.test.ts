@@ -2,16 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { parseAgentOutput, sealHtml, validateArtifactHtml } from "./output";
 
 describe("agent output", () => {
-  test("parses rolling milestone and code", () => {
+  test("parses the three-line milestone planning contract", () => {
     const parsed = parseAgentOutput(
-      "T|Adding juice\nM|Add enemy waves|2\nCODE|\n<!doctype html><html><body>x</body></html>",
+      "N|tiny-game\nS|A tiny playable game.\nM|Playable movement loop|2\nM|Add enemy pressure|2\nM|Add score multipliers|3",
     );
-    expect(parsed.notes[0]).toBe("Adding juice");
+    expect(parsed.name).toBe("tiny-game");
+    expect(parsed.summary).toBe("A tiny playable game.");
+    expect(parsed.milestones).toHaveLength(3);
     expect(parsed.milestones[0]).toEqual({
-      title: "Add enemy waves",
+      title: "Playable movement loop",
       costCredits: 2,
     });
-    expect(parsed.code).toContain("</html>");
   });
 
   test("seals nearly complete html", () => {
