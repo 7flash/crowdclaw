@@ -73,7 +73,7 @@ const RunSchema = z.object({
   cacheCreationInputTokens: z.number().int().default(0),
   cacheReadInputTokens: z.number().int().default(0),
   lastContextTokens: z.number().int().default(0),
-  contextWindow: z.number().int().default(200000),
+  contextWindow: z.number().int().default(1048576),
   usageEstimated: z.boolean().default(false),
   streamChars: z.number().int().default(0),
   preview: z.string().default(""),

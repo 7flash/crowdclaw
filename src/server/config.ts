@@ -3,23 +3,30 @@ function positiveInt(name: string, fallback: number, minimum = 1): number {
   return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
 }
 
+export type AgentProvider =
+  "gemini" | "openai" | "anthropic" | "deepseek" | "custom";
+
 export function lamportsPerCredit(): number {
   return positiveInt("LAMPORTS_PER_CREDIT", 10_000_000);
 }
 
-export function contextWindow(): number {
-  return positiveInt(
-    "GAME_CONTEXT_WINDOW",
-    positiveInt("ANTHROPIC_CONTEXT_WINDOW", 200_000),
-  );
+export function modelName(): string {
+  return process.env.GAME_MODEL?.trim() || "gemini-3-flash-preview";
 }
 
-export function modelName(): string {
-  return (
-    process.env.GAME_MODEL?.trim() ||
-    process.env.ANTHROPIC_MODEL?.trim() ||
-    "gemini-3-flash-preview"
-  );
+export function modelProvider(model = modelName()): AgentProvider {
+  const value = model.toLowerCase();
+  if (value.startsWith("gemini-")) return "gemini";
+  if (value.startsWith("gpt-") || value.startsWith("o4-")) return "openai";
+  if (value.startsWith("claude-")) return "anthropic";
+  if (value.startsWith("deepseek-")) return "deepseek";
+  return "custom";
+}
+
+export function contextWindow(): number {
+  // Gemini 3 Flash Preview has a 1,048,576-token input context window.
+  // Keep this configurable because jsx-ai can route to other providers/models.
+  return positiveInt("GAME_CONTEXT_WINDOW", 1_048_576);
 }
 
 export function agentMaxTokens(): number {
@@ -31,7 +38,7 @@ export function agentMaxSteps(): number {
 }
 
 export function agentRequestTimeoutMs(): number {
-  return positiveInt("AGENT_REQUEST_TIMEOUT_MS", 180_000, 5_000);
+  return positiveInt("AGENT_REQUEST_TIMEOUT_MS", 90_000, 5_000);
 }
 
 export function solanaRpcTimeoutMs(): number {
@@ -68,13 +75,38 @@ export function solanaRpcUrl(): string {
   );
 }
 
+function providerCredentialIssue(): string | null {
+  switch (modelProvider()) {
+    case "gemini":
+      return process.env.GEMINI_API_KEY?.trim()
+        ? null
+        : "GEMINI_API_KEY is required for Gemini models";
+    case "openai":
+      return process.env.OPENAI_API_KEY?.trim()
+        ? null
+        : "OPENAI_API_KEY is required for OpenAI models";
+    case "anthropic":
+      return process.env.ANTHROPIC_API_KEY?.trim()
+        ? null
+        : "ANTHROPIC_API_KEY is required for Anthropic models";
+    case "deepseek":
+      return process.env.DEEPSEEK_API_KEY?.trim()
+        ? null
+        : "DEEPSEEK_API_KEY is required for DeepSeek models";
+    case "custom":
+      // jsx-ai custom providers can use their own credential mechanism.
+      return null;
+  }
+}
+
 export function runtimeConfigIssues(role: "web" | "worker"): string[] {
   const issues: string[] = [];
   const production = process.env.NODE_ENV === "production";
   const needsAgent = role === "worker" || embeddedWorkerEnabled();
 
-  if (needsAgent && !modelName()) {
-    issues.push("GAME_MODEL is required when an agent worker is enabled");
+  if (needsAgent) {
+    const credentialIssue = providerCredentialIssue();
+    if (credentialIssue) issues.push(credentialIssue);
   }
   if (production && devFundingEnabled()) {
     issues.push("ALLOW_DEV_FUNDING must be 0 in production");

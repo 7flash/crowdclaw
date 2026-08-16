@@ -1,5 +1,5 @@
 /** @jsxImportSource jsx-ai */
-import { callLLM, md } from "jsx-ai";
+import { callLLM, md, render } from "jsx-ai";
 import type { ExtractedMessage, ToolCall } from "jsx-ai";
 import {
   agentMaxSteps,
@@ -149,7 +149,9 @@ function numberFrom(raw: any, keys: string[]): number {
   return 0;
 }
 
-function usageFromResult(result: any, history: ExtractedMessage[]): AgentUsage {
+function usageFromResult(result: any, promptTree: unknown): AgentUsage {
+  // jsx-ai normalizes provider usage to inputTokens/outputTokens. Keep the
+  // compatibility aliases below so older adapters do not break persisted usage.
   const raw =
     result?.usage || result?.response?.usage || result?.metadata?.usage || {};
   const inputTokens = numberFrom(raw, [
@@ -174,31 +176,30 @@ function usageFromResult(result: any, history: ExtractedMessage[]): AgentUsage {
     "cachedTokens",
     "cached_tokens",
   ]);
-  const hasProviderUsage =
-    inputTokens > 0 ||
-    outputTokens > 0 ||
-    cacheCreationInputTokens > 0 ||
-    cacheReadInputTokens > 0;
-  const estimatedInput = estimateTokens(
-    history.map((message) => ({
-      role: message.role,
-      content: message.content,
-      toolCalls: message.toolCalls,
-    })),
-  );
+  const hasProviderUsage = inputTokens > 0 || outputTokens > 0;
+
+  let estimatedInput = 0;
+  try {
+    estimatedInput = estimateTokens(render(promptTree as any));
+  } catch {
+    estimatedInput = estimateTokens(promptTree);
+  }
   const estimatedOutput = estimateTokens({
     text: result?.text || "",
     toolCalls: result?.toolCalls || [],
   });
   const input = hasProviderUsage ? inputTokens : estimatedInput;
   const output = hasProviderUsage ? outputTokens : estimatedOutput;
+
   return {
     inputTokens: input,
     outputTokens: output,
     cacheCreationInputTokens,
     cacheReadInputTokens,
-    lastContextTokens:
-      input + output + cacheCreationInputTokens + cacheReadInputTokens,
+    // Provider input usage already represents the prompt/context sent for this
+    // request. Cache counters are supplemental metadata and must not be added
+    // again or the context meter can double-count cached input.
+    lastContextTokens: input + output,
     contextWindow: contextWindow(),
     estimated: !hasProviderUsage,
   };
@@ -361,14 +362,14 @@ function buildPromptTree(history: ExtractedMessage[]) {
 export async function planGame(
   idea: string,
 ): Promise<{ text: string; usage: AgentUsage }> {
-  const history: ExtractedMessage[] = [{ role: "user", content: idea }];
-  const result = await callLLM(planPromptTree(idea), {
+  const tree = planPromptTree(idea);
+  const result = await callLLM(tree, {
     model: modelName(),
     strategy: "hybrid",
     retries: 3,
     timeoutMs: agentRequestTimeoutMs(),
   });
-  return { text: result.text || "", usage: usageFromResult(result, history) };
+  return { text: result.text || "", usage: usageFromResult(result, tree) };
 }
 
 export async function buildMilestone(
@@ -394,14 +395,15 @@ export async function buildMilestone(
   let activityText = "";
 
   for (let step = 0; step < agentMaxSteps(); step += 1) {
-    const result = await callLLM(buildPromptTree(history), {
+    const tree = buildPromptTree(history);
+    const result = await callLLM(tree, {
       model: modelName(),
       strategy: "hybrid",
       retries: 3,
       timeoutMs: agentRequestTimeoutMs(),
     });
 
-    const callUsage = usageFromResult(result, history);
+    const callUsage = usageFromResult(result, tree);
     total = addUsage(total, callUsage);
     const assistantText = result.text || "";
     const toolCalls = result.toolCalls || [];

@@ -77,6 +77,19 @@ import { callLLM, md } from "jsx-ai";
 import type { ExtractedMessage, ToolCall } from "jsx-ai";
 ```
 
+The default call path is provider-neutral but explicitly selects the configured model:
+
+```tsx
+const result = await callLLM(tree, {
+  model: process.env.GAME_MODEL || "gemini-3-flash-preview",
+  strategy: "hybrid",
+  retries: 3,
+  timeoutMs: 90_000,
+});
+```
+
+`jsx-ai` auto-detects Gemini/OpenAI/Anthropic/DeepSeek from the model name. CrowdClaw does not contain provider-specific request construction.
+
 Each milestone is a bounded tool-use conversation. The model gets:
 
 - `write_file`
@@ -124,9 +137,11 @@ Each model/tool run records:
 - project-derived funded token runway
 - activity preview and current tool action
 
-`jsx-ai` may expose provider usage in different field shapes, so CrowdClaw normalizes the common shapes. If provider usage is absent, it falls back to a character-based token estimate and marks that run as estimated in the UI with `~`.
+`jsx-ai` exposes normalized `result.usage.inputTokens` / `outputTokens`. CrowdClaw records those values directly and keeps provider-specific cache counters only as supplemental metadata when an adapter exposes them. Cache counters are not added a second time to the context meter.
 
-`GAME_CONTEXT_WINDOW` is configuration, not a guessed property of the chosen model. Set it to the actual context window for your `GAME_MODEL` if you want the remaining-context meter to be meaningful.
+If a provider does not return usage, CrowdClaw estimates input size from `jsx-ai`'s `render(tree)` output, so the fallback includes the system prompt and tool schemas instead of measuring conversation messages alone. Estimated runs are marked with `~` in the UI.
+
+CrowdClaw defaults to `gemini-3-flash-preview` and a `GAME_CONTEXT_WINDOW` of `1048576`. Override both together when selecting a different model so the remaining-context meter stays meaningful.
 
 ## Project lifecycle
 
@@ -167,7 +182,7 @@ The worker owns execution. Closing the browser, refreshing, or navigating betwee
 - `@solard/sdk@0.2.3`
 - Solana JSON-RPC balance + inbound-transaction observation
 
-`jsx-ai` is listed as `latest` in this package because no concrete package version was provided with the integration example. Pin it to your published version before a production lockfile/release.
+`jsx-ai` is listed as `latest` because no concrete published version was supplied for this cut. The application uses its custom JSX runtime, `callLLM`, `render`, `md`, normalized tool calls, and normalized usage fields; React is not involved in the agent runtime. Pin `jsx-ai` to your release version before producing a production lockfile.
 
 ## Configuration
 
@@ -178,8 +193,9 @@ cp .env.example .env
 Important values:
 
 ```dotenv
+GEMINI_API_KEY=...
 GAME_MODEL=gemini-3-flash-preview
-GAME_CONTEXT_WINDOW=200000
+GAME_CONTEXT_WINDOW=1048576
 AGENT_MAX_TOKENS=14000
 AGENT_MAX_STEPS=8
 AGENT_REQUEST_TIMEOUT_MS=90000
@@ -191,7 +207,16 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 LAMPORTS_PER_CREDIT=10000000
 ```
 
-Configure whichever provider credentials your chosen `jsx-ai` model adapter requires in `.env` as well.
+The default model uses `GEMINI_API_KEY`. When `GAME_MODEL` is changed, the worker validates the matching well-known `jsx-ai` credential:
+
+| Model prefix | Provider | Environment variable |
+|---|---|---|
+| `gemini-*` | Gemini | `GEMINI_API_KEY` |
+| `gpt-*`, `o4-*` | OpenAI | `OPENAI_API_KEY` |
+| `claude-*` | Anthropic | `ANTHROPIC_API_KEY` |
+| `deepseek-*` | DeepSeek | `DEEPSEEK_API_KEY` |
+
+Unknown/custom model names are left to a registered `jsx-ai` custom provider and are not rejected by CrowdClaw's credential preflight.
 
 `LAMPORTS_PER_CREDIT=10000000` means 0.01 SOL equals one internal CrowdClaw build credit. The project wallet itself remains a Solard-owned wallet; CrowdClaw stores only its public address in the application database.
 
