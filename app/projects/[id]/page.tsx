@@ -52,6 +52,7 @@ export default function ProjectPage({
       <ProjectApp
         bundle={bundle}
         refreshing={false}
+        liveState="connecting"
         error={null}
         tab="play"
         selectedVersion={null}

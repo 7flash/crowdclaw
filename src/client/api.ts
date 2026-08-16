@@ -76,6 +76,10 @@ export async function devFund(
   return body.project;
 }
 
+export function projectEventsUrl(id: string): string {
+  return `/api/projects/${encodeURIComponent(id)}/events`;
+}
+
 export async function getArtifactCode(
   projectId: string,
   version: number,

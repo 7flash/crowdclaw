@@ -7,10 +7,11 @@ import * as api from "../../../src/client/api";
 import type { ProjectBundle } from "../../../src/shared/types";
 import type { Tab } from "../../../src/client/state";
 
+type LiveState = "connecting" | "live" | "fallback";
+
 /**
- * The project page is a separate TradJS 4.3.0 document.
- * There is no client router: direct visits, refresh, Back/Forward, and shared
- * links all resolve /projects/:id on the server first, then this enhances it.
+ * Project is an independent TradJS 4.3 document. Initial state is SSR; an SSE
+ * snapshot stream keeps it live. A slow HTTP poll only runs while SSE is down.
  */
 export default function mount({ params }: { params: Record<string, string> }) {
   const root = document.getElementById("crowdclaw-project");
@@ -21,10 +22,13 @@ export default function mount({ params }: { params: Record<string, string> }) {
 
   const projectId = params.id || initial.project.id;
   let pollBusy = false;
+  let source: EventSource | null = null;
+  let fallbackTimer: ReturnType<typeof setInterval> | null = null;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let state = {
     bundle: initial,
     refreshing: false,
+    liveState: "connecting" as LiveState,
     error: null as string | null,
     tab: "play" as Tab,
     selectedVersion: null as number | null,
@@ -38,6 +42,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
       <ProjectApp
         bundle={state.bundle}
         refreshing={state.refreshing}
+        liveState={state.liveState}
         error={state.error}
         tab={state.tab}
         selectedVersion={state.selectedVersion}
@@ -61,6 +66,22 @@ export default function mount({ params }: { params: Record<string, string> }) {
     }, 1600);
   };
 
+  const applyBundle = (next: ProjectBundle) => {
+    const previousArtifactCount = state.bundle.artifacts.length;
+    state.bundle = next;
+    state.refreshing = false;
+    state.error = null;
+    if (
+      state.selectedVersion == null &&
+      next.artifacts.length !== previousArtifactCount
+    ) {
+      state.artifactCode = null;
+      state.artifactCodeVersion = null;
+      if (state.tab === "code") void loadCurrentCode();
+    }
+    draw();
+  };
+
   const refresh = async (showSpinner = false) => {
     if (pollBusy) return;
     pollBusy = true;
@@ -69,20 +90,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
       draw();
     }
     try {
-      const next = await api.getProject(projectId);
-      const previousArtifactCount = state.bundle.artifacts.length;
-      state.bundle = next;
-      state.refreshing = false;
-      state.error = null;
-      if (
-        state.selectedVersion == null &&
-        next.artifacts.length !== previousArtifactCount
-      ) {
-        state.artifactCode = null;
-        state.artifactCodeVersion = null;
-        if (state.tab === "code") void loadCurrentCode();
-      }
-      draw();
+      applyBundle(await api.getProject(projectId));
     } catch (error) {
       state.refreshing = false;
       state.error = message(error);
@@ -90,6 +98,65 @@ export default function mount({ params }: { params: Record<string, string> }) {
     } finally {
       pollBusy = false;
     }
+  };
+
+  const stopFallback = () => {
+    if (fallbackTimer) clearInterval(fallbackTimer);
+    fallbackTimer = null;
+  };
+
+  const startFallback = () => {
+    if (fallbackTimer) return;
+    state.liveState = "fallback";
+    draw();
+    fallbackTimer = setInterval(() => void refresh(false), 5000);
+  };
+
+  const disconnectLive = () => {
+    source?.close();
+    source = null;
+    stopFallback();
+  };
+
+  const connectLive = () => {
+    if (source || typeof EventSource === "undefined") {
+      if (!source) startFallback();
+      return;
+    }
+    state.liveState = "connecting";
+    draw();
+    const nextSource = new EventSource(api.projectEventsUrl(projectId));
+    source = nextSource;
+
+    nextSource.addEventListener("snapshot", (event) => {
+      if (source !== nextSource) return;
+      try {
+        applyBundle(
+          JSON.parse((event as MessageEvent<string>).data) as ProjectBundle,
+        );
+      } catch {
+        // A malformed frame is ignored; the next snapshot is authoritative.
+      }
+    });
+    nextSource.addEventListener("gone", () => {
+      if (source !== nextSource) return;
+      state.error = "project no longer exists";
+      draw();
+      disconnectLive();
+    });
+    nextSource.onopen = () => {
+      if (source !== nextSource) return;
+      stopFallback();
+      state.liveState = "live";
+      state.error = null;
+      draw();
+    };
+    nextSource.onerror = () => {
+      if (source !== nextSource) return;
+      // EventSource keeps reconnecting itself. Poll slowly in parallel until
+      // the connection opens again so the page never becomes stale.
+      startFallback();
+    };
   };
 
   const currentVersion = () => {
@@ -183,14 +250,15 @@ export default function mount({ params }: { params: Record<string, string> }) {
     },
   };
 
-  // BFCache can restore the project document without rerunning this module.
-  // Refresh immediately so agent/funding state catches up before the next poll.
+  window.addEventListener("pagehide", () => disconnectLive());
   window.addEventListener("pageshow", (event) => {
-    if (event.persisted) void refresh(false);
+    if (!event.persisted) return;
+    void refresh(false);
+    connectLive();
   });
 
   draw();
-  setInterval(() => void refresh(false), 3000);
+  connectLive();
 }
 
 function parseBundle(raw: string | undefined): ProjectBundle | null {

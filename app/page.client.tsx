@@ -1,18 +1,19 @@
 import { render } from "tradjs/client";
 import { HomeView } from "../src/client/components/HomeView";
 import * as api from "../src/client/api";
-import type { Project } from "../src/shared/types";
+import type { Project, ProjectBundle } from "../src/shared/types";
 
 /**
- * Home is its own document in TradJS 4.3.0.
- * It owns only idea creation + the initial roadmap animation.
- * Project navigation is a normal browser navigation to /projects/:id.
+ * Home is its own TradJS 4.3 document. It owns only idea creation + the
+ * initial roadmap animation. Planning updates arrive over the project SSE
+ * snapshot stream, with slow polling only as a compatibility fallback.
  */
 export default function mount() {
   const root = document.getElementById("crowdclaw-home");
   if (!root) return;
 
-  let planPoll: ReturnType<typeof setInterval> | null = null;
+  let planningSource: EventSource | null = null;
+  let fallbackPoll: ReturnType<typeof setInterval> | null = null;
   let revealStarted = false;
   const timers = new Set<ReturnType<typeof setTimeout>>();
   let state = {
@@ -63,9 +64,15 @@ export default function mount() {
     );
   };
 
-  const stopPlanPoll = () => {
-    if (planPoll) clearInterval(planPoll);
-    planPoll = null;
+  const stopFallback = () => {
+    if (fallbackPoll) clearInterval(fallbackPoll);
+    fallbackPoll = null;
+  };
+
+  const stopPlanningStream = () => {
+    planningSource?.close();
+    planningSource = null;
+    stopFallback();
   };
 
   const clearRevealTimers = () => {
@@ -76,7 +83,7 @@ export default function mount() {
   const revealAndOpen = () => {
     if (revealStarted) return;
     revealStarted = true;
-    stopPlanPoll();
+    stopPlanningStream();
     const total = Math.min(3, state.planningProject?.milestones.length || 0);
     state.visibleMilestones = 0;
     draw();
@@ -88,9 +95,6 @@ export default function mount() {
     }
     later(
       () => {
-        // TradJS 4.3.0 intentionally leaves links alone. Clicking this anchor
-        // performs a real same-origin document navigation, eligible for the
-        // browser-native cross-document View Transition configured by TradJS.
         const link = document.getElementById(
           "crowdclaw-created-project-link",
         ) as HTMLAnchorElement | null;
@@ -100,26 +104,70 @@ export default function mount() {
     );
   };
 
+  const applyPlanningBundle = (bundle: ProjectBundle) => {
+    state.planningProject = bundle.project;
+    state.projects = [
+      bundle.project,
+      ...state.projects.filter((item) => item.id !== bundle.project.id),
+    ];
+    state.error =
+      bundle.project.status === "failed"
+        ? bundle.project.error || "planning failed"
+        : null;
+    draw();
+    if (
+      bundle.project.milestones.length === 3 &&
+      bundle.project.status !== "planning"
+    )
+      revealAndOpen();
+  };
+
   const refreshPlanning = async () => {
     const id = state.planningProject?.id;
     if (!id) return;
     try {
-      const bundle = await api.getProject(id);
-      state.planningProject = bundle.project;
-      state.error =
-        bundle.project.status === "failed"
-          ? bundle.project.error || "planning failed"
-          : null;
-      draw();
-      if (
-        bundle.project.milestones.length === 3 &&
-        bundle.project.status !== "planning"
-      )
-        revealAndOpen();
+      applyPlanningBundle(await api.getProject(id));
     } catch (error) {
       state.error = message(error);
       draw();
     }
+  };
+
+  const startFallback = () => {
+    if (fallbackPoll) return;
+    fallbackPoll = setInterval(() => void refreshPlanning(), 2500);
+  };
+
+  const connectPlanningStream = (projectId: string) => {
+    stopPlanningStream();
+    if (typeof EventSource === "undefined") {
+      startFallback();
+      return;
+    }
+    const source = new EventSource(api.projectEventsUrl(projectId));
+    planningSource = source;
+    source.addEventListener("snapshot", (event) => {
+      if (planningSource !== source) return;
+      try {
+        applyPlanningBundle(
+          JSON.parse((event as MessageEvent<string>).data) as ProjectBundle,
+        );
+      } catch {
+        // Next snapshot is authoritative.
+      }
+    });
+    source.addEventListener("gone", () => {
+      if (planningSource !== source) return;
+      state.error = "project no longer exists";
+      draw();
+      stopPlanningStream();
+    });
+    source.onopen = () => {
+      if (planningSource === source) stopFallback();
+    };
+    source.onerror = () => {
+      if (planningSource === source) startFallback();
+    };
   };
 
   const create = async () => {
@@ -137,10 +185,9 @@ export default function mount() {
       ];
       state.visibleMilestones = 0;
       draw();
-      await refreshPlanning();
-      if (state.planningProject?.status === "planning") {
-        planPoll = setInterval(() => void refreshPlanning(), 400);
-      }
+      connectPlanningStream(project.id);
+      // Prime once immediately in case EventSource establishment is delayed.
+      void refreshPlanning();
     } catch (error) {
       state.creating = false;
       state.error = message(error);
@@ -149,7 +196,7 @@ export default function mount() {
   };
 
   const reloadHomeSnapshot = async () => {
-    stopPlanPoll();
+    stopPlanningStream();
     clearRevealTimers();
     revealStarted = false;
     state.creating = false;
@@ -161,12 +208,11 @@ export default function mount() {
       state.projects = await api.listProjects();
       draw();
     } catch {
-      // The server-rendered list is still usable if refresh fails.
+      // Server-rendered list remains usable if refresh fails.
     }
   };
 
-  // A Back navigation may restore this exact document from BFCache. In that
-  // case the old "opening agent" state would otherwise remain on screen.
+  window.addEventListener("pagehide", () => stopPlanningStream());
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) void reloadHomeSnapshot();
   });

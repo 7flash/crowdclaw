@@ -6,6 +6,7 @@ import { ago, number, shortAddress, tokens } from "../format";
 export type ProjectViewProps = {
   bundle: ProjectBundle;
   refreshing: boolean;
+  liveState: "connecting" | "live" | "fallback";
   error: string | null;
   tab: Tab;
   selectedVersion: number | null;
@@ -90,6 +91,15 @@ export function ProjectView(props: ProjectViewProps) {
           {props.refreshing ? (
             <span className="cc-label text-[var(--mint)]">· sync</span>
           ) : null}
+          <span
+            className={`cc-label ${props.liveState === "live" ? "text-[var(--mint)]" : "text-[var(--dimmer)]"}`}
+          >
+            {props.liveState === "live"
+              ? "· live"
+              : props.liveState === "fallback"
+                ? "· reconnecting"
+                : "· connecting"}
+          </span>
           {currentArtifact ? (
             <div className="ml-auto flex gap-0.5">
               <button
@@ -106,6 +116,15 @@ export function ProjectView(props: ProjectViewProps) {
               >
                 {"</>"}
               </button>
+              <a
+                className="cc-tab no-underline"
+                href={`/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}`}
+                target="_blank"
+                rel="noopener"
+                aria-label={`Open version ${currentArtifact.version}`}
+              >
+                ↗
+              </a>
             </div>
           ) : null}
         </div>

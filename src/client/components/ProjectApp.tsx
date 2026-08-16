@@ -15,6 +15,7 @@ export type ProjectActions = {
 export function ProjectApp(props: {
   bundle: ProjectBundle;
   refreshing: boolean;
+  liveState: "connecting" | "live" | "fallback";
   error: string | null;
   tab: Tab;
   selectedVersion: number | null;
@@ -29,6 +30,7 @@ export function ProjectApp(props: {
       <ProjectView
         bundle={props.bundle}
         refreshing={props.refreshing}
+        liveState={props.liveState}
         error={props.error}
         tab={props.tab}
         selectedVersion={props.selectedVersion}
