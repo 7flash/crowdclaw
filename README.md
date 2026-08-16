@@ -1,4 +1,4 @@
-# CrowdClaw — TradJS + jsx-ai autonomous build
+# CrowdClaw — TradJS 4.3 MPA + jsx-ai autonomous build
 
 CrowdClaw turns a game idea into a durable crowd-funded game-building agent.
 
@@ -24,11 +24,18 @@ Home and a project are separate page applications:
   page.client.tsx
 ```
 
-The home page owns only idea creation and the initial three-milestone reveal animation. Once planning is committed, it follows a normal real link to `/projects/:id`. TradJS can intercept that navigation, call the current page cleanup, replace the response body, and mount the project page client script.
+The home page owns only idea creation and the initial three-milestone reveal animation. Once planning is committed, it follows a normal real link to `/projects/:id`. **TradJS 4.3.0 does not intercept links**: the browser performs a real document navigation. TradJS renders both documents with browser-native cross-document View Transitions enabled by default, so navigation can stay visually smooth without becoming an SPA.
 
 Refreshing or directly opening `/projects/:id` works because it is a real server route. The project page renders the current SQLite snapshot before its client script starts polling for live changes.
 
-Every page client owns and cleans up its own timers, fetch abort controller, and UI state. There is no custom `pushState`, `popstate`, or global CrowdClaw page lifecycle.
+There is no custom `pushState`, `popstate`, client router, or global CrowdClaw page lifecycle. Each document owns its own JS realm. The home page resets its transient planning state when restored from BFCache; the project page immediately refreshes when restored from BFCache.
+
+### TradJS 4.3 navigation contract
+
+CrowdClaw deliberately relies on ordinary same-origin browser navigation. Links such as `<a href="/projects/p_123">` are not intercepted by TradJS 4.3.0. A direct visit, refresh, shared URL, Back, and Forward all resolve the route on the server as a fresh document navigation (or a browser BFCache restore).
+
+TradJS 4.3.0 enables cross-document View Transitions by default when rendering pages. CrowdClaw adds stable `view-transition-name` values for the brand and the planning/project header so compatible browsers can preserve visual continuity. Reduced-motion users get normal navigation without those named transitions.
+
 
 ### `jsx-ai` agent tool loop
 
@@ -116,12 +123,12 @@ waiting_funds ⇄ queued
          queued / waiting_funds
 ```
 
-The worker owns execution. Closing the browser or navigating between TradJS pages does not affect an agent run.
+The worker owns execution. Closing the browser, refreshing, or navigating between documents does not affect an agent run.
 
 ## Stack
 
 - Bun
-- `tradjs/server` + `tradjs/client` 4.2.1
+- `tradjs/server` + `tradjs/client` 4.3.0 (real MPA navigation + native cross-document View Transitions)
 - Tailwind CSS v4
 - `jsx-ai`
 - `sqlite-zod-orm`

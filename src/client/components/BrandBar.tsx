@@ -4,7 +4,7 @@ export function BrandBar() {
       <div className="flex h-[58px] items-center">
         <a
           href="/"
-          className="font-display border-0 bg-transparent p-0 text-[22px] font-extrabold uppercase tracking-[-.01em] text-[var(--bone)] no-underline"
+          className="cc-brand font-display border-0 bg-transparent p-0 text-[22px] font-extrabold uppercase tracking-[-.01em] text-[var(--bone)] no-underline"
         >
           Crowd<span className="text-[var(--claw)]">Claw</span>
         </a>

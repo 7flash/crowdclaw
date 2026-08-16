@@ -7,6 +7,11 @@ import * as api from "../../../src/client/api";
 import type { ProjectBundle } from "../../../src/shared/types";
 import type { Tab } from "../../../src/client/state";
 
+/**
+ * The project page is a separate TradJS 4.3.0 document.
+ * There is no client router: direct visits, refresh, Back/Forward, and shared
+ * links all resolve /projects/:id on the server first, then this enhances it.
+ */
 export default function mount({ params }: { params: Record<string, string> }) {
   const root = document.getElementById("crowdclaw-project");
   if (!root) return;
@@ -15,8 +20,6 @@ export default function mount({ params }: { params: Record<string, string> }) {
   if (!initial) return;
 
   const projectId = params.id || initial.project.id;
-  const abort = new AbortController();
-  let disposed = false;
   let pollBusy = false;
   let toastTimer: ReturnType<typeof setTimeout> | null = null;
   let state = {
@@ -31,7 +34,6 @@ export default function mount({ params }: { params: Record<string, string> }) {
   };
 
   const draw = () => {
-    if (disposed) return;
     render(
       <ProjectApp
         bundle={state.bundle}
@@ -60,15 +62,14 @@ export default function mount({ params }: { params: Record<string, string> }) {
   };
 
   const refresh = async (showSpinner = false) => {
-    if (disposed || pollBusy) return;
+    if (pollBusy) return;
     pollBusy = true;
     if (showSpinner) {
       state.refreshing = true;
       draw();
     }
     try {
-      const next = await api.getProject(projectId, abort.signal);
-      if (disposed) return;
+      const next = await api.getProject(projectId);
       const previousArtifactCount = state.bundle.artifacts.length;
       state.bundle = next;
       state.refreshing = false;
@@ -83,11 +84,9 @@ export default function mount({ params }: { params: Record<string, string> }) {
       }
       draw();
     } catch (error) {
-      if (!abort.signal.aborted) {
-        state.refreshing = false;
-        state.error = message(error);
-        draw();
-      }
+      state.refreshing = false;
+      state.error = message(error);
+      draw();
     } finally {
       pollBusy = false;
     }
@@ -104,16 +103,14 @@ export default function mount({ params }: { params: Record<string, string> }) {
     if (state.artifactCodeVersion === version && state.artifactCode != null)
       return;
     try {
-      const code = await api.getArtifactCode(projectId, version, abort.signal);
-      if (disposed || currentVersion() !== version) return;
+      const code = await api.getArtifactCode(projectId, version);
+      if (currentVersion() !== version) return;
       state.artifactCode = code;
       state.artifactCodeVersion = version;
       draw();
     } catch (error) {
-      if (!abort.signal.aborted) {
-        state.error = message(error);
-        draw();
-      }
+      state.error = message(error);
+      draw();
     }
   };
 
@@ -144,27 +141,23 @@ export default function mount({ params }: { params: Record<string, string> }) {
       state.refreshing = true;
       draw();
       try {
-        await api.syncFunding(projectId, abort.signal);
+        await api.syncFunding(projectId);
         await refresh(false);
         toast("funding refreshed");
       } catch (error) {
-        if (!abort.signal.aborted) {
-          state.refreshing = false;
-          state.error = message(error);
-          draw();
-        }
+        state.refreshing = false;
+        state.error = message(error);
+        draw();
       }
     },
     async devFund() {
       try {
-        await api.devFund(projectId, 2, abort.signal);
+        await api.devFund(projectId, 2);
         await refresh(false);
         toast("+2 dev credits");
       } catch (error) {
-        if (!abort.signal.aborted) {
-          state.error = message(error);
-          draw();
-        }
+        state.error = message(error);
+        draw();
       }
     },
     async share() {
@@ -190,16 +183,14 @@ export default function mount({ params }: { params: Record<string, string> }) {
     },
   };
 
-  draw();
-  const poll = setInterval(() => void refresh(false), 3000);
+  // BFCache can restore the project document without rerunning this module.
+  // Refresh immediately so agent/funding state catches up before the next poll.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) void refresh(false);
+  });
 
-  return () => {
-    disposed = true;
-    abort.abort();
-    clearInterval(poll);
-    if (toastTimer) clearTimeout(toastTimer);
-    render(null, root);
-  };
+  draw();
+  setInterval(() => void refresh(false), 3000);
 }
 
 function parseBundle(raw: string | undefined): ProjectBundle | null {

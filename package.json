@@ -1,6 +1,6 @@
 {
-  "name": "crowdclaw-tradjs-jsxai",
-  "version": "4.0.0",
+  "name": "crowdclaw-tradjs-430",
+  "version": "4.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,7 +18,7 @@
     "measure-fn": "4.0.5",
     "sqlite-zod-orm": "3.33.0",
     "tailwindcss": "4.1.10",
-    "tradjs": "4.2.1",
+    "tradjs": "4.3.0",
     "zod": "3.25.67"
   },
   "devDependencies": {

@@ -137,7 +137,7 @@ function Planning({
   const ready =
     project.milestones.length === 3 && project.status !== "planning";
   return (
-    <div className="mt-7 text-left">
+    <div className="cc-project-transition mt-7 text-left">
       <div className="border-l-2 border-[var(--claw)] pl-3 text-[14px] text-[var(--dim)]">
         {project.idea}
       </div>

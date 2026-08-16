@@ -53,7 +53,7 @@ export function ProjectView(props: ProjectViewProps) {
 
   return (
     <div className="mx-auto max-w-[920px] px-5 pb-[70px]">
-      <header className="flex items-start gap-[10px] pt-[10px] pb-[14px]">
+      <header className="cc-project-transition flex items-start gap-[10px] pt-[10px] pb-[14px]">
         <a
           className="cc-btn cc-btn-ghost no-underline"
           href="/"

@@ -170,3 +170,20 @@ button:disabled { opacity:.28; cursor:not-allowed; }
   background:rgba(15,24,29,.5);
   padding:0 12px;
 }
+
+/* TradJS 4.3 uses browser-native cross-document navigation/view transitions. */
+.cc-brand { view-transition-name:crowdclaw-brand; }
+.cc-project-transition { view-transition-name:crowdclaw-project; }
+
+::view-transition-old(crowdclaw-brand),
+::view-transition-new(crowdclaw-brand) {
+  animation-duration:180ms;
+}
+::view-transition-old(crowdclaw-project),
+::view-transition-new(crowdclaw-project) {
+  animation-duration:260ms;
+}
+
+@media (prefers-reduced-motion:reduce) {
+  .cc-brand,.cc-project-transition { view-transition-name:none; }
+}

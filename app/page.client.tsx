@@ -3,12 +3,15 @@ import { HomeView } from "../src/client/components/HomeView";
 import * as api from "../src/client/api";
 import type { Project } from "../src/shared/types";
 
+/**
+ * Home is its own document in TradJS 4.3.0.
+ * It owns only idea creation + the initial roadmap animation.
+ * Project navigation is a normal browser navigation to /projects/:id.
+ */
 export default function mount() {
   const root = document.getElementById("crowdclaw-home");
   if (!root) return;
 
-  const abort = new AbortController();
-  let disposed = false;
   let planPoll: ReturnType<typeof setInterval> | null = null;
   let revealStarted = false;
   const timers = new Set<ReturnType<typeof setTimeout>>();
@@ -24,14 +27,13 @@ export default function mount() {
   const later = (fn: () => void, ms: number) => {
     const timer = setTimeout(() => {
       timers.delete(timer);
-      if (!disposed) fn();
+      fn();
     }, ms);
     timers.add(timer);
     return timer;
   };
 
   const draw = () => {
-    if (disposed) return;
     render(
       <>
         <HomeView
@@ -66,6 +68,11 @@ export default function mount() {
     planPoll = null;
   };
 
+  const clearRevealTimers = () => {
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+  };
+
   const revealAndOpen = () => {
     if (revealStarted) return;
     revealStarted = true;
@@ -81,6 +88,9 @@ export default function mount() {
     }
     later(
       () => {
+        // TradJS 4.3.0 intentionally leaves links alone. Clicking this anchor
+        // performs a real same-origin document navigation, eligible for the
+        // browser-native cross-document View Transition configured by TradJS.
         const link = document.getElementById(
           "crowdclaw-created-project-link",
         ) as HTMLAnchorElement | null;
@@ -92,10 +102,9 @@ export default function mount() {
 
   const refreshPlanning = async () => {
     const id = state.planningProject?.id;
-    if (!id || disposed) return;
+    if (!id) return;
     try {
-      const bundle = await api.getProject(id, abort.signal);
-      if (disposed) return;
+      const bundle = await api.getProject(id);
       state.planningProject = bundle.project;
       state.error =
         bundle.project.status === "failed"
@@ -108,10 +117,8 @@ export default function mount() {
       )
         revealAndOpen();
     } catch (error) {
-      if (!abort.signal.aborted) {
-        state.error = message(error);
-        draw();
-      }
+      state.error = message(error);
+      draw();
     }
   };
 
@@ -122,8 +129,7 @@ export default function mount() {
     state.error = null;
     draw();
     try {
-      const project = await api.createProject(idea, abort.signal);
-      if (disposed) return;
+      const project = await api.createProject(idea);
       state.planningProject = project;
       state.projects = [
         project,
@@ -132,37 +138,49 @@ export default function mount() {
       state.visibleMilestones = 0;
       draw();
       await refreshPlanning();
-      if (!disposed && state.planningProject?.status === "planning") {
+      if (state.planningProject?.status === "planning") {
         planPoll = setInterval(() => void refreshPlanning(), 400);
       }
     } catch (error) {
-      if (!abort.signal.aborted) {
-        state.creating = false;
-        state.error = message(error);
-        draw();
-      }
+      state.creating = false;
+      state.error = message(error);
+      draw();
     }
   };
 
+  const reloadHomeSnapshot = async () => {
+    stopPlanPoll();
+    clearRevealTimers();
+    revealStarted = false;
+    state.creating = false;
+    state.planningProject = null;
+    state.visibleMilestones = 0;
+    state.error = null;
+    draw();
+    try {
+      state.projects = await api.listProjects();
+      draw();
+    } catch {
+      // The server-rendered list is still usable if refresh fails.
+    }
+  };
+
+  // A Back navigation may restore this exact document from BFCache. In that
+  // case the old "opening agent" state would otherwise remain on screen.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) void reloadHomeSnapshot();
+  });
+
   draw();
   void api
-    .listProjects(abort.signal)
+    .listProjects()
     .then((projects) => {
-      if (!disposed && !state.planningProject) {
+      if (!state.planningProject) {
         state.projects = projects;
         draw();
       }
     })
     .catch(() => {});
-
-  return () => {
-    disposed = true;
-    abort.abort();
-    stopPlanPoll();
-    for (const timer of timers) clearTimeout(timer);
-    timers.clear();
-    render(null, root);
-  };
 }
 
 function parseProjects(raw: string | undefined): Project[] {
