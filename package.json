@@ -1,12 +1,13 @@
 {
-  "name": "crowdclaw-gemini",
-  "version": "4.6.1",
+  "name": "crowdclaw",
+  "version": "4.7.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun --watch server.ts",
     "start": "NODE_ENV=production bun server.ts",
-    "worker": "bun worker.ts",
+    "agent": "bun project-agent.ts",
+    "bgrun": "bunx bgrun --dashboard",
     "check": "tsc --noEmit",
     "test": "bun test",
     "smoke": "bun scripts/smoke.ts",
@@ -14,6 +15,7 @@
   },
   "dependencies": {
     "@solard/sdk": "0.2.3",
+    "bgrun": "3.12.16",
     "jsx-ai": "latest",
     "measure-fn": "4.0.5",
     "sqlite-zod-orm": "3.33.0",
@@ -28,6 +30,7 @@
   "tradjs": {
     "serverOnly": [
       "@solard/sdk",
+      "bgrun",
       "jsx-ai",
       "sqlite-zod-orm",
       "measure-fn"

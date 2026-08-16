@@ -1,7 +1,7 @@
-import { CREDIT_SYMBOL, SOL_LAMPORTS } from "../../shared/constants";
-import type { ProjectBundle } from "../../shared/types";
+import { SOL_LAMPORTS } from "../../shared/constants";
+import type { ProjectBundle, ProjectStatus } from "../../shared/types";
 import type { Tab } from "../state";
-import { ago, number, shortAddress, tokens } from "../format";
+import { number, shortAddress, tokens } from "../format";
 
 export type ProjectViewProps = {
   bundle: ProjectBundle;
@@ -12,17 +12,30 @@ export type ProjectViewProps = {
   selectedVersion: number | null;
   artifactCode: string | null;
   artifactCodeVersion: number | null;
+  steerText: string;
+  steerAmount: string;
+  steering: boolean;
   onTab: (tab: Tab) => void;
   onVersion: (version: number) => void;
   onCopyWallet: () => void;
   onSyncFunding: () => void;
   onDevFund: () => void;
   onShare: () => void;
+  onSteerText: (value: string) => void;
+  onSteerAmount: (value: string) => void;
+  onSteer: () => void;
 };
 
 export function ProjectView(props: ProjectViewProps) {
-  const { project, artifacts, runs, events, donations, ledger, usage } =
-    props.bundle;
+  const {
+    project,
+    artifacts,
+    runs,
+    supporters,
+    steering,
+    usage,
+    lamportsPerCredit,
+  } = props.bundle;
   const latestArtifact = artifacts[artifacts.length - 1];
   const currentArtifact =
     props.selectedVersion != null
@@ -31,76 +44,63 @@ export function ProjectView(props: ProjectViewProps) {
       : latestArtifact;
   const currentRun = runs.find((run) => run.status === "running") || runs[0];
   const next = project.milestones[project.done];
-  const backlog = project.milestones.slice(project.done + 1, project.done + 4);
   const shipped = project.milestones.slice(0, project.done);
-  const fundingProgress = next
-    ? Math.min(
-        100,
-        (project.availableCredits / Math.max(0.01, next.costCredits)) * 100,
-      )
-    : 100;
-  const liveOutputTokens =
-    currentRun?.status === "running" &&
-    currentRun.outputTokens === 0 &&
-    currentRun.streamChars
-      ? Math.ceil(currentRun.streamChars / 4)
-      : currentRun?.outputTokens || 0;
-  const contextUsed = currentRun?.lastContextTokens || 0;
+  const upcoming = project.milestones.slice(project.done, project.done + 4);
+  const active = isActive(project.status);
+  const totalTokens = currentRun
+    ? currentRun.inputTokens + currentRun.outputTokens
+    : usage.totalTokens;
   const contextWindow = currentRun?.contextWindow || usage.contextWindow;
-  const contextPct = Math.min(
-    100,
-    contextWindow ? (contextUsed / contextWindow) * 100 : 0,
-  );
+  const contextUsed =
+    currentRun?.lastContextTokens || usage.latestContextTokens;
   const sol = project.onchainLamports / SOL_LAMPORTS;
+  const availableSol = creditsToSol(
+    project.availableCredits,
+    lamportsPerCredit,
+  );
+  const openSteering = steering
+    .filter((item) => item.status === "open")
+    .sort((a, b) => b.influence - a.influence);
+  const stageHeight = currentArtifact
+    ? "h-[472px] max-[800px]:h-[340px]"
+    : active
+      ? "h-[230px] max-[800px]:h-[190px]"
+      : "h-[132px]";
 
   return (
-    <div className="mx-auto max-w-[920px] px-5 pb-[70px]">
-      <header className="cc-project-transition flex items-start gap-[10px] pt-[10px] pb-[14px]">
-        <a
-          className="cc-btn cc-btn-ghost no-underline"
-          href="/"
-          aria-label="Back"
-        >
+    <main className="mx-auto max-w-[920px] px-5 pb-[72px]">
+      <header className="cc-project-transition flex items-start gap-3 py-4">
+        <a className="cc-icon-link" href="/" aria-label="Back">
           ←
         </a>
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="font-display text-[clamp(1.5rem,4vw,2.1rem)] font-extrabold uppercase leading-[.9] tracking-[-.015em]">
-              {project.name}
-            </div>
-            <span className={`cc-status cc-status-${project.status}`}>
-              {statusLabel(project.status)}
-            </span>
-          </div>
-          <div className="mt-1 text-[13.5px] text-[var(--dim)]">
-            {project.summary}
-          </div>
+          <h1 className="font-display m-0 text-[clamp(1.7rem,4vw,2.35rem)] font-extrabold uppercase leading-[.9] tracking-[-.015em]">
+            {project.name}
+          </h1>
+          {project.summary ? (
+            <p className="m-0 mt-1 truncate text-[13px] text-[var(--dim)]">
+              {project.summary}
+            </p>
+          ) : null}
         </div>
         <button className="cc-btn" onClick={props.onShare}>
-          share ↗
+          SHARE ↗
         </button>
       </header>
 
-      <div className="cc-stage">
+      <section className="cc-stage">
         <div className="cc-stage-bar">
           <span
-            className={`cc-dot ${isActive(project.status) ? "cc-dot-go" : artifacts.length ? "cc-dot-on" : ""}`}
+            className={`cc-dot ${active ? "cc-dot-go" : artifacts.length ? "cc-dot-on" : ""}`}
           />
           <span className="cc-label">
-            {currentArtifact ? `v${currentArtifact.version}` : project.status}
+            {currentArtifact ? `V${currentArtifact.version}` : "V0"}
           </span>
-          {props.refreshing ? (
-            <span className="cc-label text-[var(--mint)]">· sync</span>
-          ) : null}
           <span
-            className={`cc-label ${props.liveState === "live" ? "text-[var(--mint)]" : "text-[var(--dimmer)]"}`}
-          >
-            {props.liveState === "live"
-              ? "· live"
-              : props.liveState === "fallback"
-                ? "· reconnecting"
-                : "· connecting"}
-          </span>
+            className={`ml-1 h-1.5 w-1.5 rounded-full ${props.liveState === "live" ? "bg-[var(--mint)]" : "bg-[var(--dimmer)]"}`}
+            aria-label={props.liveState}
+          />
+          {active ? <span className="cc-stage-runner" /> : null}
           {currentArtifact ? (
             <div className="ml-auto flex gap-0.5">
               <button
@@ -129,7 +129,7 @@ export function ProjectView(props: ProjectViewProps) {
             </div>
           ) : null}
         </div>
-        <div className="relative h-[472px] max-[800px]:h-[340px]">
+        <div className={`relative ${stageHeight}`}>
           {currentArtifact ? (
             props.tab === "play" ? (
               <iframe
@@ -144,408 +144,316 @@ export function ProjectView(props: ProjectViewProps) {
                 {props.artifactCodeVersion === currentArtifact.version &&
                 props.artifactCode != null
                   ? props.artifactCode
-                  : "loading artifact code…"}
+                  : "…"}
               </pre>
             )
+          ) : active ? (
+            <AgentSurface
+              status={project.status}
+              note={project.agentNote}
+              preview={project.streamPreview}
+            />
           ) : (
-            <div className="grid h-full place-items-center px-8 text-center">
-              <div>
-                <div className="font-display text-[34px] font-extrabold uppercase text-[#283840]">
-                  {project.status === "planning" ? "PLANNING" : "v0"}
-                </div>
-                <div className="mt-3 max-w-[520px] text-sm text-[var(--dimmer)]">
-                  {project.streamPreview || project.agentNote}
-                </div>
+            <div className="grid h-full place-items-center">
+              <div className="font-display text-[34px] font-extrabold uppercase text-[#283840]">
+                V0
               </div>
             </div>
           )}
         </div>
-      </div>
+      </section>
 
-      <div
-        className={`cc-say ${project.agentNote || project.error || props.error ? "cc-say-has" : ""}`}
-      >
-        {props.error || project.error ? (
-          <p className="text-[var(--dim)]">{props.error || project.error}</p>
-        ) : (
-          <p>{project.agentNote}</p>
-        )}
-      </div>
+      {project.error || props.error ? (
+        <div className="cc-agent-line text-[var(--claw)]">
+          <span className="cc-dot" />
+          <span className="truncate">{props.error || project.error}</span>
+        </div>
+      ) : null}
 
-      <div className="grid gap-3 md:grid-cols-2">
-        <section className="cc-panel">
-          <div className="flex items-center justify-between">
-            <span className="cc-label">agent</span>
+      <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.15fr]">
+        <section className="cc-panel cc-panel-tight">
+          <div className="flex items-center justify-between gap-3">
+            <span className="cc-label">AGENT</span>
             <span className="font-data text-[10px] text-[var(--mint)]">
               {project.agentId}
             </span>
           </div>
-          <div className="mt-4 flex items-end justify-between gap-4">
-            <div>
-              <div className="font-display text-[28px] font-extrabold uppercase leading-none">
-                {statusLabel(project.status)}
-              </div>
-              <div className="mt-1 text-xs text-[var(--dimmer)]">
-                {currentRun?.model || "assigned · awaiting first run"}
-              </div>
-            </div>
-            {currentRun ? (
-              <div className="font-data text-right text-[10px] text-[var(--dimmer)]">
-                {currentRun.status}
-                <br />
-                {ago(currentRun.startedAt)}
-              </div>
-            ) : null}
+          <div className="mt-3 flex items-end justify-between gap-4">
+            <span className="font-display text-[27px] font-extrabold uppercase leading-none">
+              {statusLabel(project.status)}
+            </span>
+            <span className="font-data text-right text-[10px] text-[var(--dimmer)]">
+              {tokens(totalTokens)} / {tokens(contextWindow)} TOK
+            </span>
           </div>
-
-          <div className="mt-5 grid grid-cols-3 gap-2">
-            <Metric
-              label="input"
-              value={`${currentRun?.usageEstimated ? "~" : ""}${tokens(currentRun?.inputTokens || 0)}`}
-              suffix="tok"
+          <div className="cc-meter mt-3">
+            <span
+              style={{
+                width: `${Math.min(100, contextWindow ? (contextUsed / contextWindow) * 100 : 0)}%`,
+              }}
             />
-            <Metric
-              label="output"
-              value={`${currentRun?.usageEstimated || (currentRun?.status === "running" && currentRun.outputTokens === 0 && currentRun.streamChars) ? "~" : ""}${tokens(liveOutputTokens)}`}
-              suffix="tok"
-            />
-            <Metric
-              label={currentRun?.status === "complete" ? "charged" : "reserved"}
-              value={number(
-                currentRun?.status === "complete"
-                  ? currentRun.chargedCredits
-                  : project.reservedCredits,
-                2,
-              )}
-              suffix={CREDIT_SYMBOL}
-            />
-          </div>
-
-          <div className="mt-4">
-            <div className="flex justify-between font-data text-[10px] text-[var(--dimmer)]">
-              <span>
-                {currentRun?.usageEstimated
-                  ? "estimated context"
-                  : "run context"}
-              </span>
-              <span>
-                {tokens(contextUsed)} / {tokens(contextWindow)}
-              </span>
-            </div>
-            <div className="cc-meter mt-2">
-              <span style={{ width: `${contextPct}%` }} />
-            </div>
-            <div className="mt-2 flex justify-between text-[11px] text-[var(--dimmer)]">
-              <span>
-                context remaining{" "}
-                {tokens(Math.max(0, contextWindow - contextUsed))}
-              </span>
-              <span>lifetime {tokens(usage.totalTokens)} tokens</span>
-            </div>
-          </div>
-
-          <div className="mt-4 rounded-md border border-[var(--line)] bg-black/10 px-3 py-2.5">
-            <div className="flex items-center justify-between gap-3">
-              <span className="cc-label">funded token runway</span>
-              <span className="font-data text-[11px] text-[var(--mint)]">
-                {usage.estimatedFundedTokenRunway > 0
-                  ? `~${tokens(usage.estimatedFundedTokenRunway)} tok`
-                  : "learning"}
-              </span>
-            </div>
-            <div className="mt-1 text-[10px] leading-4 text-[var(--dimmer)]">
-              {usage.tokensPerSpentCredit > 0
-                ? `learned from ~${tokens(usage.tokensPerSpentCredit)} tokens per spent ${CREDIT_SYMBOL}`
-                : "Appears after the first shipped milestone and improves from this project’s own history."}
-            </div>
           </div>
         </section>
 
-        <section className="cc-panel">
-          <div className="flex items-center justify-between">
-            <span className="cc-label">funding wallet</span>
-            <button className="cc-mini" onClick={props.onSyncFunding}>
-              {props.refreshing ? "syncing" : "refresh"}
+        <section className="cc-panel cc-panel-tight">
+          <div className="flex items-center justify-between gap-3">
+            <span className="cc-label">SOL</span>
+            <button
+              className="cc-mini"
+              onClick={props.onSyncFunding}
+              aria-label="Refresh"
+            >
+              ↻
             </button>
           </div>
-          <button
-            className="mt-4 flex w-full items-center justify-between gap-3 border-0 bg-transparent p-0 text-left"
-            onClick={props.onCopyWallet}
-            title={project.walletAddress}
-          >
-            <span className="font-data text-[13px] text-[var(--bone)]">
+          <div className="mt-3 flex items-center gap-3">
+            <button
+              className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-left font-data text-[12px] text-[var(--bone)]"
+              onClick={props.onCopyWallet}
+              title={project.walletAddress}
+            >
               {shortAddress(project.walletAddress)}
-            </span>
-            <span className="cc-label text-[var(--mint)]">copy address</span>
-          </button>
-          <div className="mt-3 text-[11px] leading-5 text-[var(--dimmer)]">
-            Send SOL to this project wallet. Confirmed balance is converted into
-            build credits automatically.
-          </div>
-
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            <Metric label="wallet" value={number(sol, 4)} suffix="SOL" />
-            <Metric
-              label="available"
-              value={number(project.availableCredits, 2)}
-              suffix={CREDIT_SYMBOL}
-            />
-            <Metric
-              label="spent"
-              value={number(project.spentCredits, 2)}
-              suffix={CREDIT_SYMBOL}
-            />
-          </div>
-
-          {next ? (
-            <div className="mt-4">
-              <div className="flex justify-between font-data text-[10px] text-[var(--dimmer)]">
-                <span>next milestone</span>
-                <span>
-                  {number(project.availableCredits, 2)} /{" "}
-                  {number(next.costCredits, 2)} {CREDIT_SYMBOL}
-                </span>
-              </div>
-              <div className="cc-meter mt-2">
-                <span style={{ width: `${fundingProgress}%` }} />
-              </div>
-              <div className="mt-2 text-[11px] text-[var(--dimmer)]">
-                {project.availableCredits >= next.costCredits
-                  ? "funded · agent continues automatically"
-                  : `${number(next.costCredits - project.availableCredits, 2)} ${CREDIT_SYMBOL} still needed`}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="mt-4 flex flex-wrap gap-2">
+            </button>
+            <span className="font-data text-[12px]">{number(sol, 4)} SOL</span>
             <button
               className="cc-btn cc-btn-primary"
               onClick={props.onCopyWallet}
             >
-              fund this project
+              FUND
             </button>
-            {props.bundle.devFundingEnabled ? (
-              <button className="cc-btn" onClick={props.onDevFund}>
-                dev +2 {CREDIT_SYMBOL}
-              </button>
-            ) : null}
           </div>
-          {project.fundingError ? (
-            <div className="mt-3 text-[10px] text-[var(--claw)]">
-              funding sync: {project.fundingError}
+          {next ? (
+            <div className="mt-3 flex items-center gap-3">
+              <div className="cc-meter flex-1">
+                <span
+                  style={{
+                    width: `${Math.min(100, next.costCredits ? (project.availableCredits / next.costCredits) * 100 : 0)}%`,
+                  }}
+                />
+              </div>
+              <span className="font-data whitespace-nowrap text-[10px] text-[var(--dimmer)]">
+                {number(availableSol, 3)} /{" "}
+                {number(creditsToSol(next.costCredits, lamportsPerCredit), 3)}{" "}
+                SOL
+              </span>
             </div>
+          ) : null}
+          {props.bundle.devFundingEnabled ? (
+            <button className="cc-mini mt-2" onClick={props.onDevFund}>
+              DEV +{number(creditsToSol(2, lamportsPerCredit), 3)} SOL
+            </button>
           ) : null}
         </section>
       </div>
 
-      {shipped.length ? (
-        <section>
-          <div className="cc-section">
-            <span className="cc-label">shipped</span>
-          </div>
-          <div className="grid gap-[5px]">
-            {shipped.map((mile, index) => {
-              const version = mile.artifactVersion || index + 1;
-              return (
-                <button
-                  key={`${mile.title}-${index}`}
-                  className={`cc-milestone cc-done ${currentArtifact?.version === version ? "cc-selected" : ""}`}
-                  onClick={() => props.onVersion(version)}
-                >
-                  <span className="font-data text-[11px] text-[var(--mint)]">
-                    ✓
-                  </span>
-                  <span className="text-sm leading-[1.35] text-[var(--dim)]">
-                    {mile.title}
-                  </span>
-                  <span className="font-data whitespace-nowrap text-[11px] text-[var(--dimmer)]">
-                    v{version}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
-
-      {next ? (
-        <section>
-          <div className="cc-section">
-            <span className="cc-label">now</span>
-          </div>
-          <div
-            className={`cc-milestone cc-next ${project.status === "waiting_funds" ? "" : "cc-ready"}`}
-          >
-            <span className="font-data text-[11px] text-[var(--claw)]">
-              {isActive(project.status) ? (
-                <span className="cc-spinner" />
-              ) : (
-                project.done + 1
-              )}
-            </span>
-            <span className="text-sm leading-[1.35]">{next.title}</span>
-            <span className="font-data whitespace-nowrap text-[11px] text-[var(--claw)]">
-              {next.costCredits} {CREDIT_SYMBOL}
-            </span>
-          </div>
-        </section>
-      ) : null}
-
-      {backlog.length ? (
-        <section>
-          <div className="cc-section">
-            <span className="cc-label">rolling next</span>
-          </div>
-          <div className="grid gap-[5px]">
-            {backlog.map((mile, index) => (
+      <section className="mt-6">
+        <div className="cc-section">
+          <span className="cc-label">ROADMAP</span>
+        </div>
+        <div className="grid gap-[5px]">
+          {shipped.map((mile, index) => {
+            const version = mile.artifactVersion || index + 1;
+            return (
+              <button
+                key={`${mile.title}-${index}`}
+                className={`cc-milestone cc-done ${currentArtifact?.version === version ? "cc-selected" : ""}`}
+                onClick={() => props.onVersion(version)}
+              >
+                <span className="font-data text-[11px] text-[var(--mint)]">
+                  ✓
+                </span>
+                <span className="text-sm leading-[1.35] text-[var(--dim)]">
+                  {mile.title}
+                </span>
+                <span className="font-data text-[10px] text-[var(--dimmer)]">
+                  V{version}
+                </span>
+              </button>
+            );
+          })}
+          {upcoming.map((mile, offset) => {
+            const index = project.done + offset;
+            const current = offset === 0;
+            return (
               <div
                 key={`${mile.title}-${index}`}
-                className="cc-milestone opacity-40"
+                className={`cc-milestone ${current ? "cc-next" : "opacity-45"}`}
               >
                 <span className="font-data text-[11px] text-[var(--dimmer)]">
-                  {project.done + 2 + index}
+                  {current && active ? (
+                    <span className="cc-spinner" />
+                  ) : (
+                    index + 1
+                  )}
                 </span>
                 <span className="text-sm leading-[1.35]">{mile.title}</span>
-                <span className="font-data whitespace-nowrap text-[11px] text-[var(--dimmer)]">
-                  {mile.costCredits} {CREDIT_SYMBOL}
+                <span
+                  className={`font-data whitespace-nowrap text-[10px] ${current ? "text-[var(--claw)]" : "text-[var(--dimmer)]"}`}
+                >
+                  {number(creditsToSol(mile.costCredits, lamportsPerCredit), 3)}{" "}
+                  SOL
                 </span>
               </div>
-            ))}
-          </div>
-          <div className="mt-2 text-[10px] text-[var(--dimmer)]">
-            After every ship the agent adds one new concrete milestone, so the
-            roadmap keeps rolling.
-          </div>
-        </section>
-      ) : null}
+            );
+          })}
+        </div>
+      </section>
 
-      {donations.length ? (
-        <section>
-          <div className="cc-section">
-            <span className="cc-label">supporters</span>
-          </div>
-          <div className="cc-activity">
-            {donations.slice(0, 8).map((donation) => (
-              <div
-                key={donation.id}
-                className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-3 border-b border-[var(--line)] py-2.5 text-[11px] last:border-0"
-              >
-                <span className="font-data text-[var(--dimmer)]">
-                  {ago(donation.confirmedAt)}
-                </span>
-                <span
-                  className="min-w-0 truncate font-data text-[var(--dim)]"
-                  title={donation.fromAddress}
+      <div className="mt-6 grid gap-3 md:grid-cols-2">
+        <section className="cc-panel cc-panel-tight">
+          <div className="cc-label mb-3">SUPPORTERS</div>
+          {supporters.length ? (
+            <div className="grid gap-0">
+              <div className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-[var(--line)] pb-2 font-data text-[8px] uppercase tracking-[.12em] text-[var(--dimmer)]">
+                <span></span>
+                <span>SOL</span>
+                <span>INFLUENCE</span>
+              </div>
+              {supporters.slice(0, 8).map((supporter) => (
+                <div
+                  key={supporter.address}
+                  className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-[var(--line)] py-2.5 font-data text-[10px] last:border-0"
                 >
-                  {shortAddress(donation.fromAddress)}
-                </span>
-                <span className="font-data text-right text-[var(--mint)]">
-                  +{number(donation.lamports / SOL_LAMPORTS, 4)} SOL{" "}
-                  <span className="text-[var(--dimmer)]">
-                    · {number(donation.credits, 2)} {CREDIT_SYMBOL}
+                  <span
+                    className="truncate text-[var(--dim)]"
+                    title={supporter.address}
+                  >
+                    {shortAddress(supporter.address)}
                   </span>
-                </span>
-              </div>
-            ))}
-          </div>
-          <div className="mt-2 text-[10px] text-[var(--dimmer)]">
-            Recent confirmed inbound SOL transactions are indexed for
-            attribution. Wallet balance, not transaction indexing, remains the
-            source of build credits.
-          </div>
+                  <span>
+                    {number(supporter.donatedLamports / SOL_LAMPORTS, 4)}
+                  </span>
+                  <span className="text-[var(--mint)]">
+                    {number(supporter.influenceAvailable, 2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="font-display text-[24px] font-extrabold text-[#283840]">
+              —
+            </div>
+          )}
         </section>
-      ) : null}
 
-      {ledger.length ? (
-        <section>
-          <div className="cc-section">
-            <span className="cc-label">credit ledger</span>
-          </div>
-          <div className="cc-activity">
-            {ledger.slice(0, 12).map((entry) => (
-              <div
-                key={entry.id}
-                className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-3 border-b border-[var(--line)] py-2.5 text-[11px] last:border-0"
-              >
-                <span className="font-data text-[var(--dimmer)]">
-                  {ago(entry.createdAt)}
-                </span>
-                <span className="min-w-0 text-[var(--dim)]">
-                  {ledgerLabel(entry.kind, entry.note)}
-                </span>
-                <span
-                  className={`font-data text-right ${entry.credits >= 0 ? "text-[var(--mint)]" : "text-[var(--claw)]"}`}
+        <section className="cc-panel cc-panel-tight">
+          <div className="cc-label mb-3">STEER NEXT</div>
+          {openSteering.length ? (
+            <div className="mb-3 grid gap-1.5">
+              {openSteering.slice(0, 4).map((item) => (
+                <div
+                  key={item.id}
+                  className="grid grid-cols-[1fr_auto] gap-3 rounded-[5px] border border-[var(--line)] px-3 py-2 text-[11px]"
                 >
-                  {entry.credits >= 0 ? "+" : ""}
-                  {number(entry.credits, 2)} {CREDIT_SYMBOL}
-                </span>
-              </div>
-            ))}
+                  <span>{item.instruction}</span>
+                  <span className="font-data text-[var(--mint)]">
+                    {number(item.influence, 2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <div className="grid grid-cols-[1fr_72px_auto] gap-2">
+            <input
+              className="cc-input"
+              value={props.steerText}
+              maxLength={180}
+              placeholder="Steer next…"
+              onInput={(event: Event) =>
+                props.onSteerText(
+                  (event.currentTarget as HTMLInputElement).value,
+                )
+              }
+            />
+            <input
+              className="cc-input font-data text-right"
+              value={props.steerAmount}
+              inputMode="decimal"
+              aria-label="Influence"
+              onInput={(event: Event) =>
+                props.onSteerAmount(
+                  (event.currentTarget as HTMLInputElement).value,
+                )
+              }
+            />
+            <button
+              className="cc-btn"
+              disabled={
+                props.steering ||
+                props.steerText.trim().length < 3 ||
+                !(Number(props.steerAmount) > 0)
+              }
+              onClick={props.onSteer}
+            >
+              {props.steering ? "…" : "STEER"}
+            </button>
           </div>
         </section>
-      ) : null}
-
-      {events.length ? (
-        <section>
-          <div className="cc-section">
-            <span className="cc-label">activity</span>
-          </div>
-          <div className="cc-activity">
-            {events.slice(0, 8).map((event) => (
-              <div
-                key={event.id}
-                className="grid grid-cols-[72px_1fr] gap-3 border-b border-[var(--line)] py-2.5 text-[11px] last:border-0"
-              >
-                <span className="font-data text-[var(--dimmer)]">
-                  {ago(event.createdAt)}
-                </span>
-                <span className="text-[var(--dim)]">{event.message}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-    </div>
+      </div>
+    </main>
   );
 }
 
-function Metric({
-  label,
-  value,
-  suffix,
+function AgentSurface({
+  status,
+  note,
+  preview,
 }: {
-  label: string;
-  value: string;
-  suffix: string;
+  status: ProjectStatus;
+  note: string;
+  preview: string;
 }) {
+  const lines =
+    status === "planning"
+      ? []
+      : preview
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter(Boolean)
+          .slice(-5);
   return (
-    <div className="rounded-md border border-[var(--line)] bg-black/10 px-3 py-2.5">
-      <div className="cc-label">{label}</div>
-      <div className="font-data mt-1 text-[14px]">
-        {value}{" "}
-        <span className="text-[9px] text-[var(--dimmer)]">{suffix}</span>
+    <div className="cc-agent-surface h-full">
+      <div className="cc-agent-grid" aria-hidden="true" />
+      <div className="relative z-10 flex h-full flex-col justify-center px-8 py-6">
+        <div className="flex items-center gap-3">
+          <span className="cc-spinner" />
+          <span className="font-data text-[10px] tracking-[.16em] text-[var(--claw)]">
+            {note || statusLabel(status)}
+          </span>
+        </div>
+        {lines.length ? (
+          <div className="mt-5 grid gap-2 font-data text-[10px] text-[var(--dimmer)]">
+            {lines.map((line, index) => (
+              <div key={`${line}-${index}`} className="cc-activity-row">
+                <span>{line}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="mt-6 grid max-w-[440px] gap-2" aria-hidden="true">
+            <span className="cc-agent-bar w-[92%]" />
+            <span className="cc-agent-bar w-[68%]" />
+            <span className="cc-agent-bar w-[80%]" />
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-function ledgerLabel(kind: string, note: string): string {
-  if (kind === "funding") return note || "Confirmed wallet funding";
-  if (kind === "manual") return note || "Development credit";
-  if (kind === "milestone_spend") return note || "Milestone shipped";
-  if (kind === "legacy_funding") return "Opening funding balance";
-  if (kind === "legacy_spend") return "Opening milestone spend";
-  return note || kind;
+function creditsToSol(credits: number, lamportsPerCredit: number): number {
+  return (Math.max(0, credits) * lamportsPerCredit) / SOL_LAMPORTS;
 }
 
-function statusLabel(status: string): string {
-  if (status === "waiting_funds") return "waiting for money";
-  if (status === "validating") return "validating";
-  if (status === "publishing") return "publishing";
-  return status.replaceAll("_", " ");
+function statusLabel(status: ProjectStatus): string {
+  if (status === "waiting_funds") return "WAITING";
+  if (status === "working") return "BUILDING";
+  if (status === "validating" || status === "publishing") return "SHIPPING";
+  if (status === "failed") return "STOPPED";
+  return status.toUpperCase();
 }
 
-function isActive(status: string): boolean {
+function isActive(status: ProjectStatus): boolean {
   return ["planning", "queued", "working", "validating", "publishing"].includes(
     status,
   );

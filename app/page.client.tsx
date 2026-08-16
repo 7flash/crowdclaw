@@ -2,67 +2,47 @@ import { render } from "tradjs/client";
 import { HomeView } from "../src/client/components/HomeView";
 import * as api from "../src/client/api";
 import type { Project, ProjectBundle } from "../src/shared/types";
+import { DEFAULT_LAMPORTS_PER_CREDIT } from "../src/shared/constants";
 
-/**
- * Home is its own TradJS 4.3 document. It owns only idea creation + the
- * initial roadmap animation. Planning updates arrive over the project SSE
- * snapshot stream, with slow polling only as a compatibility fallback.
- */
 export default function mount() {
   const root = document.getElementById("crowdclaw-home");
   if (!root) return;
 
   let planningSource: EventSource | null = null;
   let fallbackPoll: ReturnType<typeof setInterval> | null = null;
-  let revealStarted = false;
-  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let openTimer: ReturnType<typeof setTimeout> | null = null;
   let state = {
     projects: parseProjects(root.dataset.projects),
     creating: false,
     planningProject: null as Project | null,
-    visibleMilestones: 0,
     draft: "",
     error: null as string | null,
+    lamportsPerCredit: DEFAULT_LAMPORTS_PER_CREDIT,
   };
 
-  const later = (fn: () => void, ms: number) => {
-    const timer = setTimeout(() => {
-      timers.delete(timer);
-      fn();
-    }, ms);
-    timers.add(timer);
-    return timer;
-  };
-
-  const draw = () => {
+  const draw = () =>
     render(
       <>
         <HomeView
           projects={state.projects}
           creating={state.creating}
           planningProject={state.planningProject}
-          visibleMilestones={state.visibleMilestones}
           draft={state.draft}
           onDraft={(draft) => {
             state.draft = draft;
             draw();
           }}
-          onSeed={(draft) => {
-            state.draft = draft;
-            draw();
-            queueMicrotask(() => root.querySelector("textarea")?.focus());
-          }}
+          lamportsPerCredit={state.lamportsPerCredit}
           onCreate={() => void create()}
         />
         {state.error ? (
-          <div className="mx-auto -mt-8 max-w-[660px] px-5 pb-10 text-sm text-[var(--claw)]">
+          <div className="mx-auto -mt-8 max-w-[700px] px-5 pb-10 text-xs text-[var(--claw)]">
             {state.error}
           </div>
         ) : null}
       </>,
       root,
     );
-  };
 
   const stopFallback = () => {
     if (fallbackPoll) clearInterval(fallbackPoll);
@@ -75,36 +55,20 @@ export default function mount() {
     stopFallback();
   };
 
-  const clearRevealTimers = () => {
-    for (const timer of timers) clearTimeout(timer);
-    timers.clear();
-  };
-
-  const revealAndOpen = () => {
-    if (revealStarted) return;
-    revealStarted = true;
-    stopPlanningStream();
-    const total = Math.min(3, state.planningProject?.milestones.length || 0);
-    state.visibleMilestones = 0;
-    draw();
-    for (let index = 1; index <= total; index += 1) {
-      later(() => {
-        state.visibleMilestones = index;
-        draw();
-      }, index * 260);
-    }
-    later(
-      () => {
-        const link = document.getElementById(
+  const scheduleOpen = () => {
+    if (openTimer) return;
+    openTimer = setTimeout(() => {
+      openTimer = null;
+      (
+        document.getElementById(
           "crowdclaw-created-project-link",
-        ) as HTMLAnchorElement | null;
-        link?.click();
-      },
-      total * 260 + 700,
-    );
+        ) as HTMLAnchorElement | null
+      )?.click();
+    }, 520);
   };
 
   const applyPlanningBundle = (bundle: ProjectBundle) => {
+    state.lamportsPerCredit = bundle.lamportsPerCredit;
     state.planningProject = bundle.project;
     state.projects = [
       bundle.project,
@@ -118,8 +82,10 @@ export default function mount() {
     if (
       bundle.project.milestones.length === 3 &&
       bundle.project.status !== "planning"
-    )
-      revealAndOpen();
+    ) {
+      stopPlanningStream();
+      scheduleOpen();
+    }
   };
 
   const refreshPlanning = async () => {
@@ -134,16 +100,13 @@ export default function mount() {
   };
 
   const startFallback = () => {
-    if (fallbackPoll) return;
-    fallbackPoll = setInterval(() => void refreshPlanning(), 2500);
+    if (!fallbackPoll)
+      fallbackPoll = setInterval(() => void refreshPlanning(), 2500);
   };
 
   const connectPlanningStream = (projectId: string) => {
     stopPlanningStream();
-    if (typeof EventSource === "undefined") {
-      startFallback();
-      return;
-    }
+    if (typeof EventSource === "undefined") return startFallback();
     const source = new EventSource(api.projectEventsUrl(projectId));
     planningSource = source;
     source.addEventListener("snapshot", (event) => {
@@ -152,15 +115,7 @@ export default function mount() {
         applyPlanningBundle(
           JSON.parse((event as MessageEvent<string>).data) as ProjectBundle,
         );
-      } catch {
-        // Next snapshot is authoritative.
-      }
-    });
-    source.addEventListener("gone", () => {
-      if (planningSource !== source) return;
-      state.error = "project no longer exists";
-      draw();
-      stopPlanningStream();
+      } catch {}
     });
     source.onopen = () => {
       if (planningSource === source) stopFallback();
@@ -183,10 +138,8 @@ export default function mount() {
         project,
         ...state.projects.filter((item) => item.id !== project.id),
       ];
-      state.visibleMilestones = 0;
       draw();
       connectPlanningStream(project.id);
-      // Prime once immediately in case EventSource establishment is delayed.
       void refreshPlanning();
     } catch (error) {
       state.creating = false;
@@ -195,26 +148,22 @@ export default function mount() {
     }
   };
 
-  const reloadHomeSnapshot = async () => {
+  const reset = async () => {
     stopPlanningStream();
-    clearRevealTimers();
-    revealStarted = false;
+    if (openTimer) clearTimeout(openTimer);
+    openTimer = null;
     state.creating = false;
     state.planningProject = null;
-    state.visibleMilestones = 0;
     state.error = null;
-    draw();
     try {
       state.projects = await api.listProjects();
-      draw();
-    } catch {
-      // Server-rendered list remains usable if refresh fails.
-    }
+    } catch {}
+    draw();
   };
 
   window.addEventListener("pagehide", () => stopPlanningStream());
   window.addEventListener("pageshow", (event) => {
-    if (event.persisted) void reloadHomeSnapshot();
+    if (event.persisted) void reset();
   });
 
   draw();

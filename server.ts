@@ -1,40 +1,38 @@
 import { serve } from "tradjs/server";
-import {
-  assertRuntimeConfig,
-  embeddedWorkerEnabled,
-} from "./src/server/config";
+import { agentSupervisorMs, assertRuntimeConfig } from "./src/server/config";
+import { reconcileProjectAgents } from "./src/server/agents/process-manager";
 import { log } from "./src/server/log";
-import { startAgentWorker } from "./src/server/worker/worker";
 
 assertRuntimeConfig("web");
 
-const stopWorker = embeddedWorkerEnabled() ? startAgentWorker() : () => {};
 let shuttingDown = false;
+let supervisor: ReturnType<typeof setInterval> | null = null;
 
 function shutdown(signal: string): void {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (supervisor) clearInterval(supervisor);
   log("info", "server.shutdown", { signal });
-  stopWorker();
-  setTimeout(() => process.exit(0), 250);
+  setTimeout(() => process.exit(0), 100);
 }
 
 process.once("SIGTERM", () => shutdown("SIGTERM"));
 process.once("SIGINT", () => shutdown("SIGINT"));
 
-const port = Number(process.env.PORT || 3000);
-log("info", "server.starting", {
+const port = Number(process.env.PORT || process.env.BUN_PORT || 3000);
+log("info", "server.starting", { port });
+
+await reconcileProjectAgents();
+supervisor = setInterval(
+  () => void reconcileProjectAgents(),
+  agentSupervisorMs(),
+);
+
+await serve({
+  appDir: "./app",
+  globalCss: "./app/globals.css",
+  defaultTitle: "CrowdClaw",
   port,
-  embeddedWorker: embeddedWorkerEnabled(),
 });
 
-try {
-  await serve({
-    appDir: "./app",
-    globalCss: "./app/globals.css",
-    defaultTitle: "CrowdClaw",
-    port,
-  });
-} finally {
-  stopWorker();
-}
+log("info", "server.ready", { port });

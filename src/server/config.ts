@@ -24,8 +24,6 @@ export function modelProvider(model = modelName()): AgentProvider {
 }
 
 export function contextWindow(): number {
-  // Gemini 3 Flash Preview has a 1,048,576-token input context window.
-  // Keep this configurable because jsx-ai can route to other providers/models.
   return positiveInt("GAME_CONTEXT_WINDOW", 1_048_576);
 }
 
@@ -49,16 +47,16 @@ export function fundingSyncMs(): number {
   return positiveInt("FUNDING_SYNC_MS", 15_000, 1_000);
 }
 
-export function workerIntervalMs(): number {
-  return positiveInt("WORKER_INTERVAL_MS", 2_000, 500);
+export function agentPollMs(): number {
+  return positiveInt("AGENT_POLL_MS", 2_000, 500);
 }
 
-export function workerLeaseMs(): number {
-  return positiveInt("WORKER_LEASE_MS", 60_000, 10_000);
+export function agentLeaseMs(): number {
+  return positiveInt("AGENT_LEASE_MS", 60_000, 10_000);
 }
 
-export function embeddedWorkerEnabled(): boolean {
-  return process.env.EMBEDDED_WORKER !== "0";
+export function agentSupervisorMs(): number {
+  return positiveInt("AGENT_SUPERVISOR_MS", 15_000, 2_000);
 }
 
 export function devFundingEnabled(): boolean {
@@ -94,7 +92,6 @@ function providerCredentialIssue(): string | null {
         ? null
         : "DEEPSEEK_API_KEY is required for DeepSeek models";
     case "custom":
-      // jsx-ai custom providers can use their own credential mechanism.
       return null;
   }
 }
@@ -102,18 +99,16 @@ function providerCredentialIssue(): string | null {
 export function runtimeConfigIssues(role: "web" | "worker"): string[] {
   const issues: string[] = [];
   const production = process.env.NODE_ENV === "production";
-  const needsAgent = role === "worker" || embeddedWorkerEnabled();
 
-  if (needsAgent) {
-    const credentialIssue = providerCredentialIssue();
-    if (credentialIssue) issues.push(credentialIssue);
-  }
-  if (production && devFundingEnabled()) {
+  // Web creates the bgrun agent processes, so fail before accepting ideas if
+  // the selected provider cannot run in those inherited child environments.
+  const credentialIssue = providerCredentialIssue();
+  if (credentialIssue) issues.push(credentialIssue);
+
+  if (production && devFundingEnabled())
     issues.push("ALLOW_DEV_FUNDING must be 0 in production");
-  }
-  if (production && databasePath() === ":memory:") {
+  if (production && databasePath() === ":memory:")
     issues.push("DATABASE_PATH=:memory: is not safe for production");
-  }
 
   try {
     const url = new URL(solanaRpcUrl());
@@ -123,8 +118,8 @@ export function runtimeConfigIssues(role: "web" | "worker"): string[] {
     issues.push("SOLANA_RPC_URL is invalid");
   }
 
-  if (workerLeaseMs() < workerIntervalMs() * 2) {
-    issues.push("WORKER_LEASE_MS should be at least twice WORKER_INTERVAL_MS");
+  if (agentLeaseMs() < agentPollMs() * 2) {
+    issues.push("AGENT_LEASE_MS should be at least twice AGENT_POLL_MS");
   }
   return issues;
 }

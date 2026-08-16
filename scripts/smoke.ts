@@ -60,6 +60,26 @@ assert(
   projectsRepository.donations(project.id).length === 1,
   "donation signatures must be idempotent",
 );
+const supporter = projectsRepository.supporters(project.id)[0];
+assert(
+  supporter?.influenceAvailable === 5,
+  "donation attribution should create proportional supporter influence",
+);
+const challenge = projectsRepository.createSteeringChallenge(
+  project.id,
+  "DonorWallet",
+);
+const steer = projectsRepository.submitSteering({
+  projectId: project.id,
+  challengeId: challenge.id,
+  address: "DonorWallet",
+  instruction: "add risky speed boosts",
+  influence: 2,
+});
+assert(
+  projectsRepository.supporters(project.id)[0]?.influenceAvailable === 3,
+  "steering should spend supporter influence",
+);
 
 const planRun = projectsRepository.createRun({
   projectId: project.id,
@@ -154,6 +174,12 @@ projectsRepository.ship(
     createdAt: Date.now(),
   },
   toMilestone({ title: "Rolling improvement", costCredits: 2 }),
+  [steer.id],
+);
+assert(
+  projectsRepository.steering(project.id).find((item) => item.id === steer.id)
+    ?.status === "consumed",
+  "published next milestone should consume captured steering",
 );
 const settledRun = projectsRepository
   .runs(project.id)

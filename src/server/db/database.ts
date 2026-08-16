@@ -104,6 +104,28 @@ const DonationSchema = z.object({
   confirmedAt: z.number().int(),
 });
 
+const SteeringSchema = z.object({
+  steerId: z.string(),
+  projectId: z.string(),
+  fromAddress: z.string(),
+  instruction: z.string(),
+  influence: z.number(),
+  status: z.enum(["open", "consumed"]),
+  createdAt: z.number().int(),
+  consumedAt: z.number().int().default(0),
+  consumedMilestoneIndex: z.number().int().default(-1),
+});
+
+const SteeringChallengeSchema = z.object({
+  challengeId: z.string(),
+  projectId: z.string(),
+  address: z.string(),
+  message: z.string(),
+  expiresAt: z.number().int(),
+  usedAt: z.number().int().default(0),
+  createdAt: z.number().int(),
+});
+
 const CreditLedgerSchema = z.object({
   ledgerId: z.string(),
   projectId: z.string(),
@@ -143,6 +165,8 @@ export const db = new Database(dbPath, {
   events: EventSchema,
   fundingObservations: FundingObservationSchema,
   donations: DonationSchema,
+  steering: SteeringSchema,
+  steeringChallenges: SteeringChallengeSchema,
   creditLedger: CreditLedgerSchema,
 });
 

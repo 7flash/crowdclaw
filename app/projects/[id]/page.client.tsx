@@ -35,6 +35,9 @@ export default function mount({ params }: { params: Record<string, string> }) {
     artifactCode: null as string | null,
     artifactCodeVersion: null as number | null,
     toast: null as string | null,
+    steerText: "",
+    steerAmount: "1",
+    steering: false,
   };
 
   const draw = () => {
@@ -49,6 +52,9 @@ export default function mount({ params }: { params: Record<string, string> }) {
         artifactCode={state.artifactCode}
         artifactCodeVersion={state.artifactCodeVersion}
         toast={state.toast}
+        steerText={state.steerText}
+        steerAmount={state.steerAmount}
+        steering={state.steering}
         actions={actions}
       />,
       root,
@@ -198,7 +204,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
       const address = state.bundle.project.walletAddress;
       try {
         await navigator.clipboard.writeText(address);
-        toast("wallet address copied");
+        toast("COPIED");
       } catch {
         toast(address);
       }
@@ -210,7 +216,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
       try {
         await api.syncFunding(projectId);
         await refresh(false);
-        toast("funding refreshed");
+        toast("SYNCED");
       } catch (error) {
         state.refreshing = false;
         state.error = message(error);
@@ -221,9 +227,63 @@ export default function mount({ params }: { params: Record<string, string> }) {
       try {
         await api.devFund(projectId, 2);
         await refresh(false);
-        toast("+2 dev credits");
+        toast("DEV FUNDED");
       } catch (error) {
         state.error = message(error);
+        draw();
+      }
+    },
+
+    setSteerText(value) {
+      state.steerText = value;
+      draw();
+    },
+    setSteerAmount(value) {
+      state.steerAmount = value;
+      draw();
+    },
+    async steer() {
+      if (state.steering) return;
+      const instruction = state.steerText.trim();
+      const influence = Number(state.steerAmount);
+      if (instruction.length < 3 || !(influence > 0)) return;
+      const provider = (window as any).solana;
+      if (!provider?.connect || !provider?.signMessage) {
+        toast("SOL WALLET REQUIRED");
+        return;
+      }
+      state.steering = true;
+      draw();
+      try {
+        const connection = await provider.connect();
+        const address = String(
+          connection?.publicKey?.toString?.() ||
+            provider.publicKey?.toString?.() ||
+            "",
+        );
+        if (!address) throw new Error("wallet address unavailable");
+        const challenge = await api.steeringChallenge(projectId, address);
+        const bytes = new TextEncoder().encode(challenge.message);
+        const signed = await provider.signMessage(bytes, "utf8");
+        const raw = signed?.signature || signed;
+        const signature = bytesToBase64(
+          raw instanceof Uint8Array ? raw : new Uint8Array(raw),
+        );
+        await api.submitSteering(projectId, {
+          challengeId: challenge.id,
+          address,
+          signature,
+          instruction,
+          influence,
+        });
+        state.steerText = "";
+        await refresh(false);
+        toast("STEERED");
+      } catch (error) {
+        if ((error as Error)?.name !== "AbortError")
+          toast(message(error).toUpperCase());
+      } finally {
+        state.steering = false;
         draw();
       }
     },
@@ -242,10 +302,10 @@ export default function mount({ params }: { params: Record<string, string> }) {
           });
         } else {
           await navigator.clipboard.writeText(url);
-          toast("project link copied");
+          toast("COPIED");
         }
       } catch (error) {
-        if ((error as Error)?.name !== "AbortError") toast("could not share");
+        if ((error as Error)?.name !== "AbortError") toast("SHARE FAILED");
       }
     },
   };
@@ -272,4 +332,10 @@ function parseBundle(raw: string | undefined): ProjectBundle | null {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "request failed";
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }

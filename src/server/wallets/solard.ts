@@ -9,17 +9,14 @@ function sdk(): Solard {
 }
 
 export async function createProjectWallet(projectId: string): Promise<string> {
-  const address = await measure(
-    { label: "wallet.project.create", projectId },
-    async () => {
-      const wallet = await measure("solard.create-wallet", () =>
-        sdk().createWallet(`crowdclaw-${projectId}`),
-      );
-      if (!wallet?.address)
-        throw new Error("Solard did not return a wallet address");
-      return wallet.address;
-    },
-  );
+  const address = await measure("wallet.project.create", async () => {
+    const wallet = await measure("solard.create-wallet", () =>
+      sdk().createWallet(`crowdclaw-${projectId}`),
+    );
+    if (!wallet?.address)
+      throw new Error("Solard did not return a wallet address");
+    return wallet.address;
+  });
   if (!address) throw new Error("failed to create project wallet");
   return address;
 }

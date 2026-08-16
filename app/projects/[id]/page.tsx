@@ -13,6 +13,9 @@ const actions: ProjectActions = {
   syncFunding: noop,
   devFund: noop,
   share: noop,
+  setSteerText: noop,
+  setSteerAmount: noop,
+  steer: noop,
 };
 
 export default function ProjectPage({
@@ -27,16 +30,10 @@ export default function ProjectPage({
         <BrandBar />
         <div className="mx-auto max-w-[660px] px-5 py-24 text-center">
           <div className="font-display text-[42px] font-extrabold uppercase">
-            Project not found
+            NOT FOUND
           </div>
-          <p className="mt-3 text-sm text-[var(--dim)]">
-            This CrowdClaw project does not exist or was removed.
-          </p>
-          <a
-            className="cc-btn cc-btn-primary mt-6 inline-block no-underline"
-            href="/"
-          >
-            back home
+          <a className="cc-btn mt-6 inline-block no-underline" href="/">
+            ←
           </a>
         </div>
       </main>
@@ -59,6 +56,9 @@ export default function ProjectPage({
         artifactCode={null}
         artifactCodeVersion={null}
         toast={null}
+        steerText=""
+        steerAmount="1"
+        steering={false}
         actions={actions}
       />
     </main>

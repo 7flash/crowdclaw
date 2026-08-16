@@ -1,18 +1,14 @@
-import {
-  embeddedWorkerEnabled,
-  runtimeConfigIssues,
-  workerIntervalMs,
-} from "./config";
+import { runtimeConfigIssues } from "./config";
 import { probeDatabase } from "./db/database";
 import { errorMessage } from "./log";
-import { getAgentWorkerHealth } from "./worker/worker";
+import { bgrunHealth } from "./agents/process-manager";
 
 export type HealthResult = {
   ok: boolean;
   service: "crowdclaw";
   uptimeSeconds: number;
   checks: Record<string, { ok: boolean; detail?: string }>;
-  worker?: ReturnType<typeof getAgentWorkerHealth>;
+  agents?: { total: number; running: number };
 };
 
 export function liveHealth(): HealthResult {
@@ -24,7 +20,7 @@ export function liveHealth(): HealthResult {
   };
 }
 
-export function readyHealth(): HealthResult {
+export async function readyHealth(): Promise<HealthResult> {
   const checks: HealthResult["checks"] = {};
   const issues = runtimeConfigIssues("web");
   checks.config = issues.length
@@ -38,29 +34,16 @@ export function readyHealth(): HealthResult {
     checks.database = { ok: false, detail: errorMessage(error) };
   }
 
-  let worker: ReturnType<typeof getAgentWorkerHealth> | undefined;
-  if (embeddedWorkerEnabled()) {
-    worker = getAgentWorkerHealth();
-    const grace = Math.max(10_000, workerIntervalMs() * 4);
-    const fresh =
-      worker.running ||
-      (worker.lastSuccessAt > 0 && Date.now() - worker.lastSuccessAt < grace);
-    checks.worker =
-      worker.started && fresh
-        ? { ok: true }
-        : {
-            ok: false,
-            detail:
-              worker.lastError ||
-              "embedded worker has not completed a recent tick",
-          };
-  }
+  const agents = await bgrunHealth();
+  checks.bgrun = agents.ok
+    ? { ok: true }
+    : { ok: false, detail: agents.detail || "bgrun unavailable" };
 
   return {
     ok: Object.values(checks).every((check) => check.ok),
     service: "crowdclaw",
     uptimeSeconds: Math.floor(process.uptime()),
     checks,
-    worker,
+    agents: { total: agents.total, running: agents.running },
   };
 }

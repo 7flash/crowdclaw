@@ -63,3 +63,13 @@ Project numeric fields remain cached operational totals for fast scheduling. The
 ## Security boundary
 
 Project wallets are treated as receive-only funding addresses by CrowdClaw. The application database stores only their public addresses. Wallet key custody and generation remain inside `@solard/sdk` / Solard.
+
+## Supporter influence
+
+Attributed donor addresses earn influence linearly from confirmed donation build units. Influence is not spendable funding and does not alter the project wallet balance. It is a separate direction budget:
+
+```text
+influence available = attributed donation units - steering units spent
+```
+
+Steering requires an Ed25519 signature from the donor's Solana address. Open steering is weighted into the next-milestone proposal and consumed only when the run that used it publishes successfully.

@@ -31,4 +31,16 @@ describe("measure-fn contract", () => {
 
     expect(offenders).toEqual([]);
   });
+  test("spans use string labels with the current measure-fn API", () => {
+    const offenders = sourceFiles(ROOT)
+      .filter((file) => !file.endsWith("measure-contract.test.ts"))
+      .flatMap((file) => {
+        const source = readFileSync(file, "utf8");
+        return /measure\s*\(\s*\{/.test(source)
+          ? [file.slice(ROOT.length + 1)]
+          : [];
+      });
+
+    expect(offenders).toEqual([]);
+  });
 });

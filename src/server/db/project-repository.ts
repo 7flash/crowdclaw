@@ -5,6 +5,8 @@ import type {
   Artifact,
   CreditLedgerEntry,
   Donation,
+  Supporter,
+  Steering,
   ArtifactSummary,
   Milestone,
   Project,
@@ -123,6 +125,20 @@ function donationFromRow(row: any): Donation {
     slot: Number(row.slot || 0),
     blockTime: Number(row.blockTime || 0),
     confirmedAt: Number(row.confirmedAt || 0),
+  };
+}
+
+function steeringFromRow(row: any): Steering {
+  return {
+    id: row.steerId,
+    projectId: row.projectId,
+    fromAddress: row.fromAddress || "",
+    instruction: row.instruction || "",
+    influence: Number(row.influence || 0),
+    status: row.status,
+    createdAt: Number(row.createdAt || 0),
+    consumedAt: Number(row.consumedAt || 0),
+    consumedMilestoneIndex: Number(row.consumedMilestoneIndex ?? -1),
   };
 }
 
@@ -249,7 +265,9 @@ export const projectsRepository = {
     const allRuns = this.runs(projectId, 500);
     const runs = allRuns.slice(0, 40);
     const events = this.events(projectId, 40);
-    const donations = this.donations(projectId, 20);
+    const donations = this.donations(projectId, 40);
+    const supporters = this.supporters(projectId);
+    const steering = this.steering(projectId, 20);
     const ledger = this.ledger(projectId, 40);
     return {
       project,
@@ -257,6 +275,8 @@ export const projectsRepository = {
       runs,
       events,
       donations,
+      supporters,
+      steering,
       ledger,
       usage: usageFromRuns(allRuns, project),
       lamportsPerCredit: lamportsPerCredit(),
@@ -287,7 +307,7 @@ export const projectsRepository = {
       creditedLamports: 0,
       manualCredits: 0,
       currentRunId: null,
-      agentNote: "Reading the idea and planning the first playable milestones…",
+      agentNote: "PLAN",
       streamPreview: "",
       lastFundingSyncAt: 0,
       fundingError: "",
@@ -525,18 +545,20 @@ export const projectsRepository = {
       const row = rowByProjectId(projectId);
       if (!row) return;
       const project = projectFromRow(row);
-      const next = project.milestones[project.done];
-      if (!next) {
-        row.status = "completed";
-      } else if (
-        project.availableCredits >= next.costCredits &&
-        project.status === "waiting_funds"
-      ) {
-        row.status = "queued";
-        row.agentNote = "Funding reached. Queued for the next milestone.";
-        row.error = "";
+
+      // Funding reconciliation must never advance unrelated lifecycle states.
+      // A brand-new planning project intentionally has no milestones yet; treating
+      // that as roadmap exhaustion would complete it before the planner can run.
+      if (project.status === "waiting_funds") {
+        const next = project.milestones[project.done];
+        if (next && project.availableCredits >= next.costCredits) {
+          row.status = "queued";
+          row.agentNote = "Funding reached. Queued for the next milestone.";
+          row.error = "";
+          row.updatedAt = now();
+        }
       }
-      row.updatedAt = now();
+
       result = projectFromRow(row);
     });
     return result;
@@ -605,6 +627,7 @@ export const projectsRepository = {
     expectedDone: number,
     artifact: Omit<Artifact, "id">,
     nextMilestone?: Milestone,
+    steeringIds: string[] = [],
   ): Project {
     let result: Project | null = null;
     db.transaction(() => {
@@ -633,6 +656,17 @@ export const projectsRepository = {
         artifactVersion: artifact.version,
       };
       if (nextMilestone && miles.length < 40) miles.push(nextMilestone);
+
+      for (const steerId of steeringIds) {
+        const steer = db.steering
+          .select()
+          .where({ projectId, steerId })
+          .first() as any | null;
+        if (!steer || steer.status !== "open") continue;
+        steer.status = "consumed";
+        steer.consumedAt = now();
+        steer.consumedMilestoneIndex = expectedDone + 1;
+      }
 
       row.milestones = miles;
       row.done = expectedDone + 1;
@@ -921,6 +955,156 @@ export const projectsRepository = {
     return rows.map(donationFromRow);
   },
 
+  supporters(projectId: string): Supporter[] {
+    const donations = this.donations(projectId, 2000).filter(
+      (item) => item.fromAddress && item.fromAddress !== "unknown",
+    );
+    const steerRows = db.steering.select().where({ projectId }).all() as any[];
+    const map = new Map<string, Supporter>();
+    for (const donation of donations) {
+      const current = map.get(donation.fromAddress) || {
+        address: donation.fromAddress,
+        donatedLamports: 0,
+        influenceEarned: 0,
+        influenceSpent: 0,
+        influenceAvailable: 0,
+      };
+      current.donatedLamports += donation.lamports;
+      current.influenceEarned = round2(
+        current.influenceEarned + donation.credits,
+      );
+      map.set(current.address, current);
+    }
+    for (const row of steerRows) {
+      const address = String(row.fromAddress || "");
+      const current = map.get(address);
+      if (!current) continue;
+      current.influenceSpent = round2(
+        current.influenceSpent + Number(row.influence || 0),
+      );
+    }
+    for (const supporter of map.values()) {
+      supporter.influenceAvailable = round2(
+        Math.max(0, supporter.influenceEarned - supporter.influenceSpent),
+      );
+    }
+    return [...map.values()].sort(
+      (a, b) => b.donatedLamports - a.donatedLamports,
+    );
+  },
+
+  steering(projectId: string, limit = 20): Steering[] {
+    const rows = db.steering
+      .select()
+      .where({ projectId })
+      .orderBy("createdAt", "DESC")
+      .limit(limit)
+      .all() as any[];
+    return rows.map(steeringFromRow);
+  },
+
+  openSteering(projectId: string, limit = 12): Steering[] {
+    const rows = db.steering
+      .select()
+      .where({ projectId, status: "open" })
+      .orderBy("influence", "DESC")
+      .limit(limit)
+      .all() as any[];
+    return rows.map(steeringFromRow);
+  },
+
+  createSteeringChallenge(
+    projectId: string,
+    address: string,
+  ): { id: string; message: string; expiresAt: number } {
+    const createdAt = now();
+    const challengeId = uid("sc");
+    const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+    const message = `CrowdClaw steer\nproject:${projectId}\naddress:${address}\nnonce:${nonce}`;
+    const expiresAt = createdAt + 5 * 60_000;
+    db.steeringChallenges.insert({
+      challengeId,
+      projectId,
+      address,
+      message,
+      expiresAt,
+      usedAt: 0,
+      createdAt,
+    });
+    return { id: challengeId, message, expiresAt };
+  },
+
+  steeringChallenge(
+    projectId: string,
+    challengeId: string,
+    address: string,
+  ): { message: string; expiresAt: number; usedAt: number } | null {
+    const row = db.steeringChallenges
+      .select()
+      .where({ projectId, challengeId, address })
+      .first() as any | null;
+    return row
+      ? {
+          message: row.message,
+          expiresAt: Number(row.expiresAt || 0),
+          usedAt: Number(row.usedAt || 0),
+        }
+      : null;
+  },
+
+  submitSteering(input: {
+    projectId: string;
+    challengeId: string;
+    address: string;
+    instruction: string;
+    influence: number;
+  }): Steering {
+    let result: Steering | null = null;
+    db.transaction(() => {
+      const challenge = db.steeringChallenges
+        .select()
+        .where({
+          projectId: input.projectId,
+          challengeId: input.challengeId,
+          address: input.address,
+        })
+        .first() as any | null;
+      if (
+        !challenge ||
+        Number(challenge.usedAt || 0) > 0 ||
+        Number(challenge.expiresAt || 0) < now()
+      )
+        throw new Error("steering challenge expired");
+
+      const supporter = this.supporters(input.projectId).find(
+        (item) => item.address === input.address,
+      );
+      const influence = round2(input.influence);
+      if (
+        !supporter ||
+        influence <= 0 ||
+        influence > supporter.influenceAvailable + 1e-9
+      )
+        throw new Error("insufficient influence");
+
+      challenge.usedAt = now();
+      const row = db.steering.insert({
+        steerId: uid("s"),
+        projectId: input.projectId,
+        fromAddress: input.address,
+        instruction: input.instruction.trim().slice(0, 180),
+        influence,
+        status: "open",
+        createdAt: now(),
+        consumedAt: 0,
+        consumedMilestoneIndex: -1,
+      }) as any;
+      result = steeringFromRow(row);
+    });
+    if (!result) throw new Error("failed to submit steering");
+    return result;
+  },
+
   ledger(projectId: string, limit = 40): CreditLedgerEntry[] {
     const row = rowByProjectId(projectId);
     if (row) backfillLedgerIfNeeded(row);
@@ -1012,12 +1196,105 @@ export const projectsRepository = {
     return expired;
   },
 
+  recoverProjectWork(projectId: string): number {
+    let recovered = 0;
+    const t = now();
+    db.transaction(() => {
+      const row = rowByProjectId(projectId);
+      if (!row) return;
+      const milestones = Array.isArray(row.milestones) ? row.milestones : [];
+      if (
+        row.status === "completed" &&
+        milestones.length === 0 &&
+        Number(row.done || 0) === 0 &&
+        row.name === "new-project"
+      ) {
+        row.status = "planning";
+        row.currentRunId = null;
+        row.leaseOwner = "";
+        row.leaseUntil = 0;
+        row.retryAt = 0;
+        row.failureCount = 0;
+        row.error = "";
+        row.agentNote = "";
+        row.streamPreview = "";
+        row.updatedAt = t;
+        recovered += 1;
+        return;
+      }
+      if (Number(row.leaseUntil || 0) > t) return;
+      if (row.status === "planning" && row.currentRunId) {
+        const run = rowByRunId(row.currentRunId);
+        if (run && run.status === "running") {
+          run.status = "failed";
+          run.error = "agent lease expired";
+          run.finishedAt = t;
+        }
+        row.currentRunId = null;
+        row.leaseOwner = "";
+        row.leaseUntil = 0;
+        row.streamPreview = "";
+        row.updatedAt = t;
+        recovered += 1;
+        return;
+      }
+      if (["working", "validating", "publishing"].includes(row.status)) {
+        const project = projectFromRow(row);
+        if (row.currentRunId) {
+          const run = rowByRunId(row.currentRunId);
+          if (run && run.status === "running") {
+            run.status = "failed";
+            run.error = "agent lease expired";
+            run.finishedAt = t;
+          }
+        }
+        const miles = [...project.milestones];
+        if (miles[project.done]?.state === "working")
+          miles[project.done] = { ...miles[project.done], state: "queued" };
+        row.milestones = miles;
+        row.status = "queued";
+        row.reservedCredits = 0;
+        row.currentRunId = null;
+        row.leaseOwner = "";
+        row.leaseUntil = 0;
+        row.error = "";
+        row.updatedAt = t;
+        recovered += 1;
+      }
+    });
+    return recovered;
+  },
+
   recoverExpiredWork(): number {
     let recovered = 0;
     const t = now();
     db.transaction(() => {
       const rows = db.projects.select().all() as any[];
       for (const row of rows) {
+        // Repair projects produced by the old funding-state bug: a fresh
+        // project could be marked completed before its first roadmap existed.
+        const milestones = Array.isArray(row.milestones) ? row.milestones : [];
+        if (
+          row.status === "completed" &&
+          milestones.length === 0 &&
+          Number(row.done || 0) === 0 &&
+          row.name === "new-project"
+        ) {
+          row.status = "planning";
+          row.currentRunId = null;
+          row.leaseOwner = "";
+          row.leaseUntil = 0;
+          row.retryAt = 0;
+          row.failureCount = 0;
+          row.error = "";
+          row.agentNote =
+            "Recovered initial planning state; retrying the roadmap now.";
+          row.streamPreview = "";
+          row.updatedAt = t;
+          recovered += 1;
+          continue;
+        }
+
         const expired = Number(row.leaseUntil || 0) <= t;
         if (!expired) continue;
 
@@ -1072,8 +1349,8 @@ export const projectsRepository = {
       );
       const staleAfter = Math.max(
         20_000,
-        (Number.parseInt(process.env.WORKER_LEASE_MS || "60000", 10) ||
-          60_000) * 2,
+        (Number.parseInt(process.env.AGENT_LEASE_MS || "60000", 10) || 60_000) *
+          2,
       );
       const runs = db.runs.select().all() as any[];
       for (const run of runs) {

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { devFundingEnabled } from "../../../../../src/server/config";
 import { projectsRepository } from "../../../../../src/server/db/project-repository";
 import { json, jsonBody } from "../../../../../src/server/http";
-import { wakeAgentWorker } from "../../../../../src/server/worker/worker";
+import { ensureProjectAgent } from "../../../../../src/server/agents/process-manager";
 
 const Body = z.object({ credits: z.number().finite().positive().max(100) });
 
@@ -22,7 +22,7 @@ export async function POST(
       `Added ${credits.toFixed(2)} local test credits.`,
     );
     projectsRepository.markQueuedIfFunded(project.id);
-    wakeAgentWorker();
+    await ensureProjectAgent(project.id);
     return json({ project: projectsRepository.get(project.id) });
   } catch (error) {
     return json(

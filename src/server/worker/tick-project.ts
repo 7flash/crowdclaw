@@ -77,7 +77,7 @@ export async function planProject(
   });
   projectsRepository.setStatus(project.id, "planning", {
     currentRunId: run.id,
-    agentNote: "Planning the first three playable milestones…",
+    agentNote: "PLAN",
     streamPreview: "",
     error: "",
   });
@@ -91,50 +91,52 @@ export async function planProject(
   let text = "";
 
   try {
-    await measure(
-      { label: "agent.project.plan", projectId: project.id, runId: run.id },
-      async () => {
-        const result = await measure("jsx-ai.plan", () =>
-          planGame(project.idea),
-        );
-        if (!result) throw new Error("planning returned no result");
-        text = result.text;
-        usage = result.usage;
-        projectsRepository.updateRunUsage(run.id, {
-          ...usagePatch(result.usage),
-          streamChars: text.length,
-          preview: text,
-          note: "Initial roadmap drafted.",
-        });
-        projectsRepository.updateLiveRun(
+    await measure("agent.project.plan", async () => {
+      const result = await measure("jsx-ai.plan", () =>
+        planGame(project.idea, (preview, liveUsage) => {
+          text = preview;
+          usage = liveUsage;
+          projectsRepository.updateRunUsage(run.id, {
+            ...usagePatch(liveUsage),
+            streamChars: preview.length,
+            preview,
+            note: "PLAN",
+          });
+          projectsRepository.updateLiveRun(project.id, run.id, preview, "");
+        }),
+      );
+      if (!result) throw new Error("planning returned no result");
+      text = result.text;
+      usage = result.usage;
+      projectsRepository.updateRunUsage(run.id, {
+        ...usagePatch(result.usage),
+        streamChars: text.length,
+        preview: text,
+        note: "PLAN",
+      });
+      projectsRepository.updateLiveRun(project.id, run.id, text, "PLAN");
+
+      const parsed = await measure("agent.plan.parse", () =>
+        parseAgentOutput(text),
+      );
+      if (!parsed || parsed.milestones.length !== 3)
+        throw new Error("planner must return exactly three milestones");
+      const milestones = parsed.milestones.map((item) => toMilestone(item));
+      await measure("db.plan.publish", () =>
+        projectsRepository.setPlanningResult(
           project.id,
           run.id,
-          text,
-          "Initial roadmap drafted.",
-        );
-
-        const parsed = await measure("agent.plan.parse", () =>
-          parseAgentOutput(text),
-        );
-        if (!parsed || parsed.milestones.length !== 3)
-          throw new Error("planner must return exactly three milestones");
-        const milestones = parsed.milestones.map((item) => toMilestone(item));
-        await measure("db.plan.publish", () =>
-          projectsRepository.setPlanningResult(
-            project.id,
-            run.id,
-            parsed.name || "untitled",
-            parsed.summary || project.idea,
-            milestones,
-          ),
-        );
-      },
-    );
+          parsed.name || "untitled",
+          parsed.summary || project.idea,
+          milestones,
+        ),
+      );
+    });
 
     projectsRepository.finishRun(run.id, "complete", {
       ...(usage ? usagePatch(usage) : {}),
       preview: text,
-      note: "Initial roadmap published.",
+      note: "DONE",
     });
     projectsRepository.event(
       project.id,
@@ -177,9 +179,7 @@ export async function buildNext(
   const milestoneIndex = project.done;
   const milestone = project.milestones[milestoneIndex];
   if (!milestone) {
-    projectsRepository.setStatus(project.id, "completed", {
-      agentNote: "No further milestone was proposed.",
-    });
+    projectsRepository.setStatus(project.id, "completed", { agentNote: "" });
     return;
   }
 
@@ -206,78 +206,80 @@ export async function buildNext(
       `Started ${milestone.title}.`,
     );
 
-    await measure(
-      {
-        label: "agent.project.build",
-        projectId: project.id,
-        runId: run.id,
-        milestone: milestone.title,
-      },
-      async () => {
-        const artifacts = await measure("db.artifacts.load", () =>
-          projectsRepository.artifacts(project.id),
-        );
-        const previous = artifacts?.[artifacts.length - 1];
+    await measure("agent.project.build", async () => {
+      const artifacts = await measure("db.artifacts.load", () =>
+        projectsRepository.artifacts(project.id),
+      );
+      const previous = artifacts?.[artifacts.length - 1];
+      const steering = await measure("db.steering.load", () =>
+        projectsRepository.openSteering(project.id),
+      );
 
-        const result = await measure("jsx-ai.tool-loop", () =>
-          buildMilestone(reserved, milestone, previous?.html, (activity) => {
+      const result = await measure("jsx-ai.tool-loop", () =>
+        buildMilestone(
+          reserved,
+          milestone,
+          previous?.html,
+          steering,
+          (activity) => {
             activityText = activity.text;
             usage = activity.usage;
             writeProgress(activity.text, activity.note, activity.usage);
-          }),
-        );
-        if (!result) throw new Error("build returned no result");
-        usage = result.usage;
-        activityText = result.activityText;
-        writeProgress(activityText, result.summary, result.usage, true);
+          },
+        ),
+      );
+      if (!result) throw new Error("build returned no result");
+      usage = result.usage;
+      activityText = result.activityText;
+      writeProgress(activityText, result.summary, result.usage, true);
 
-        await measure("db.status.validating", () =>
-          projectsRepository.setRunStatus(project.id, run.id, "validating", {
-            agentNote: "Validating index.html before publishing…",
-          }),
-        );
+      await measure("db.status.validating", () =>
+        projectsRepository.setRunStatus(project.id, run.id, "validating", {
+          agentNote: "VALIDATE",
+        }),
+      );
 
-        const sealed = await measure("artifact.seal", () =>
-          sealHtml(result.html),
-        );
-        const artifactIssues = await measure("artifact.validate", () =>
-          validateArtifactHtml(sealed),
-        );
-        if (artifactIssues.length)
-          throw new Error(`artifact rejected: ${artifactIssues.join("; ")}`);
-        if (!result.nextMilestone.title)
-          throw new Error("agent did not propose the next rolling milestone");
+      const sealed = await measure("artifact.seal", () =>
+        sealHtml(result.html),
+      );
+      const artifactIssues = await measure("artifact.validate", () =>
+        validateArtifactHtml(sealed),
+      );
+      if (artifactIssues.length)
+        throw new Error(`artifact rejected: ${artifactIssues.join("; ")}`);
+      if (!result.nextMilestone.title)
+        throw new Error("agent did not propose the next rolling milestone");
 
-        const nextMilestone = toMilestone(result.nextMilestone);
-        await measure("db.status.publishing", () =>
-          projectsRepository.setRunStatus(project.id, run.id, "publishing", {
-            agentNote: "Publishing the new playable version…",
-          }),
-        );
-        const version = milestoneIndex + 1;
-        const sha256 = createHash("sha256").update(sealed).digest("hex");
-        projectsRepository.updateRunUsage(run.id, {
-          ...usagePatch(result.usage),
-          note: result.summary,
-        });
-        await measure("artifact.publish", () =>
-          projectsRepository.ship(
-            project.id,
-            milestoneIndex,
-            {
-              projectId: project.id,
-              version,
-              milestoneTitle: milestone.title,
-              html: sealed,
-              sha256,
-              runId: run.id,
-              createdAt: Date.now(),
-            },
-            nextMilestone,
-          ),
-        );
-      },
-    );
+      const nextMilestone = toMilestone(result.nextMilestone);
+      await measure("db.status.publishing", () =>
+        projectsRepository.setRunStatus(project.id, run.id, "publishing", {
+          agentNote: "PUBLISH",
+        }),
+      );
+      const version = milestoneIndex + 1;
+      const sha256 = createHash("sha256").update(sealed).digest("hex");
+      projectsRepository.updateRunUsage(run.id, {
+        ...usagePatch(result.usage),
+        note: result.summary,
+      });
+      await measure("artifact.publish", () =>
+        projectsRepository.ship(
+          project.id,
+          milestoneIndex,
+          {
+            projectId: project.id,
+            version,
+            milestoneTitle: milestone.title,
+            html: sealed,
+            sha256,
+            runId: run.id,
+            createdAt: Date.now(),
+          },
+          nextMilestone,
+          steering.map((item) => item.id),
+        ),
+      );
+    });
 
     projectsRepository.finishRun(run.id, "complete", {
       ...(usage ? usagePatch(usage) : {}),

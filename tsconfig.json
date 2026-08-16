@@ -20,7 +20,7 @@
   },
   "include": [
     "server.ts",
-    "worker.ts",
+    "project-agent.ts",
     "app/**/*.ts",
     "app/**/*.tsx",
     "src/**/*.ts",

@@ -93,3 +93,34 @@ export async function getArtifactCode(
     throw new Error(`artifact request failed (${response.status})`);
   return await response.text();
 }
+
+export async function steeringChallenge(
+  projectId: string,
+  address: string,
+): Promise<{ id: string; message: string; expiresAt: number }> {
+  return readJson(
+    await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/steer/challenge?address=${encodeURIComponent(address)}`,
+      { cache: "no-store" },
+    ),
+  );
+}
+
+export async function submitSteering(
+  projectId: string,
+  input: {
+    challengeId: string;
+    address: string;
+    signature: string;
+    instruction: string;
+    influence: number;
+  },
+): Promise<void> {
+  await readJson(
+    await fetch(`/api/projects/${encodeURIComponent(projectId)}/steer`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(input),
+    }),
+  );
+}

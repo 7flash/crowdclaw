@@ -1,5 +1,5 @@
 /** @jsxImportSource jsx-ai */
-import { callLLM, md, render } from "jsx-ai";
+import { callLLM, md, render, streamLLM } from "jsx-ai";
 import type { ExtractedMessage, ToolCall } from "jsx-ai";
 import {
   agentMaxSteps,
@@ -8,7 +8,7 @@ import {
   contextWindow,
   modelName,
 } from "../config";
-import type { Milestone, Project } from "../../shared/types";
+import type { Milestone, Project, Steering } from "../../shared/types";
 import { validateArtifactHtml } from "./output";
 import {
   ensureWorkspaceIndex,
@@ -249,22 +249,19 @@ function executeTool(
         writeWorkspaceFile(projectId, path, content);
         return {
           message: toolResult(call, `Wrote ${path} (${content.length} chars).`),
-          note: `Writing ${path}…`,
+          note: `WRITE ${path}`,
         };
       }
       case "read_file": {
         const path = String(call.args.path || "");
         const content = readWorkspaceFile(projectId, path);
-        return {
-          message: toolResult(call, content),
-          note: `Inspecting ${path}…`,
-        };
+        return { message: toolResult(call, content), note: `READ ${path}` };
       }
       case "list_files": {
         const files = listWorkspaceFiles(projectId);
         return {
           message: toolResult(call, JSON.stringify(files, null, 2)),
-          note: "Inspecting the project files…",
+          note: "FILES",
         };
       }
       case "phase_done": {
@@ -280,12 +277,12 @@ function executeTool(
         if (!summary)
           return {
             message: toolResult(call, "phase_done requires a summary", true),
-            note: "Completion rejected: summary is missing.",
+            note: "FIX SUMMARY",
           };
         if (words < 3 || words > 7)
           return {
             message: toolResult(call, "next_milestone must be 3-7 words", true),
-            note: "Completion rejected: next milestone must be 3-7 words.",
+            note: "FIX NEXT",
           };
         if (!Number.isInteger(cost) || cost < 1 || cost > 4)
           return {
@@ -294,25 +291,25 @@ function executeTool(
               "next_cost must be a whole number from 1 to 4",
               true,
             ),
-            note: "Completion rejected: next cost must be 1-4.",
+            note: "FIX COST",
           };
         return {
           message: toolResult(call, `Completion requested: ${summary}`),
-          note: summary,
+          note: "DONE",
           done: { summary, title, cost },
         };
       }
       default:
         return {
           message: toolResult(call, `Unknown tool: ${call.name}`, true),
-          note: `Unknown tool ${call.name}`,
+          note: `TOOL ${call.name}`,
         };
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return {
       message: toolResult(call, message, true),
-      note: `Tool error: ${message}`,
+      note: `ERROR ${call.name}`,
     };
   }
 }
@@ -361,21 +358,30 @@ function buildPromptTree(history: ExtractedMessage[]) {
 
 export async function planGame(
   idea: string,
+  onText?: (text: string, usage: AgentUsage) => void,
 ): Promise<{ text: string; usage: AgentUsage }> {
   const tree = planPromptTree(idea);
-  const result = await callLLM(tree, {
-    model: modelName(),
-    strategy: "hybrid",
-    retries: 3,
-    timeoutMs: agentRequestTimeoutMs(),
-  });
-  return { text: result.text || "", usage: usageFromResult(result, tree) };
+  let text = "";
+  for await (const chunk of streamLLM(
+    modelName(),
+    [
+      { role: "system", content: PLAN_SYS_SOURCE },
+      { role: "user", content: idea },
+    ],
+    { temperature: 0.2, maxTokens: 1200 },
+  )) {
+    text += chunk;
+    const usage = usageFromResult({ text, toolCalls: [] }, tree);
+    onText?.(text, usage);
+  }
+  return { text, usage: usageFromResult({ text, toolCalls: [] }, tree) };
 }
 
 export async function buildMilestone(
   project: Project,
   milestone: Milestone,
   previousHtml: string | undefined,
+  steering: Steering[],
   onActivity: (activity: AgentActivity) => void,
 ): Promise<BuildPhaseResult> {
   ensureWorkspaceIndex(project.id, previousHtml);
@@ -387,6 +393,7 @@ export async function buildMilestone(
     Implement this milestone in the existing project directory. ${files.length ? `Current files: ${files.join(", ")}. Inspect relevant files before editing.` : "The workspace is empty; build the first playable version now."}
     Preserve the strongest existing mechanics. Do not merely restyle the game.
     Leave a complete self-contained index.html that passes the CrowdClaw artifact rules.
+    ${steering.length ? `SUPPORTER STEERING:\n${steering.map((item) => `- ${item.influence.toFixed(2)} influence: ${item.instruction}`).join("\n")}\nUse influence as weight. Apply compatible requests to this implementation and let stronger requests shape the rolling milestone you propose.` : ""}
     When the milestone is genuinely playable, call phase_done and propose exactly one rolling next milestone with cost 1-4.
   `;
 
@@ -408,7 +415,6 @@ export async function buildMilestone(
     const assistantText = result.text || "";
     const toolCalls = result.toolCalls || [];
     history.push({ role: "assistant", content: assistantText, toolCalls });
-    activityText += `${assistantText}\n`;
 
     if (!toolCalls.length) {
       const reminder =
@@ -416,7 +422,7 @@ export async function buildMilestone(
       history.push({ role: "user", content: reminder });
       onActivity({
         text: activityText.slice(-1800),
-        note: "Agent is deciding the next file change…",
+        note: "THINK",
         usage: total,
       });
       continue;
@@ -427,7 +433,7 @@ export async function buildMilestone(
     for (const call of toolCalls) {
       const executed = executeTool(project.id, call);
       history.push(executed.message);
-      activityText += `${call.name}: ${executed.note}\n`;
+      activityText += `${executed.note}\n`;
       if (executed.done) completed = executed.done;
       onActivity({
         text: activityText.slice(-1800),
@@ -448,7 +454,7 @@ export async function buildMilestone(
         });
         onActivity({
           text: activityText.slice(-1800),
-          note: "Completion rejected: index.html is missing.",
+          note: "FIX index.html",
           usage: total,
         });
         continue;
@@ -461,7 +467,7 @@ export async function buildMilestone(
         });
         onActivity({
           text: activityText.slice(-1800),
-          note: `Completion rejected: ${issues[0]}`,
+          note: "FIX index.html",
           usage: total,
         });
         continue;

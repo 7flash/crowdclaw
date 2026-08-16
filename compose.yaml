@@ -1,5 +1,5 @@
 services:
-  web:
+  crowdclaw:
     build: .
     restart: unless-stopped
     env_file: .env
@@ -7,7 +7,6 @@ services:
       NODE_ENV: production
       DATABASE_PATH: /data/crowdclaw.sqlite
       WORKSPACE_ROOT: /data/workspaces
-      EMBEDDED_WORKER: "0"
       HOME: /data/home
     ports:
       - "3000:3000"
@@ -19,23 +18,6 @@ services:
       timeout: 3s
       start_period: 20s
       retries: 3
-
-  worker:
-    build: .
-    restart: unless-stopped
-    command: ["bun", "worker.ts"]
-    env_file: .env
-    environment:
-      NODE_ENV: production
-      DATABASE_PATH: /data/crowdclaw.sqlite
-      WORKSPACE_ROOT: /data/workspaces
-      EMBEDDED_WORKER: "0"
-      HOME: /data/home
-    volumes:
-      - crowdclaw-data:/data
-    depends_on:
-      web:
-        condition: service_healthy
 
 volumes:
   crowdclaw-data:

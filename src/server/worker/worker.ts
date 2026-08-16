@@ -1,6 +1,10 @@
 import { hostname } from "node:os";
 import { measure } from "measure-fn";
-import { workerIntervalMs, workerLeaseMs } from "../config";
+import {
+  embeddedWorkerEnabled,
+  workerIntervalMs,
+  workerLeaseMs,
+} from "../config";
 import { projectsRepository } from "../db/project-repository";
 import { errorMessage, log } from "../log";
 import { syncProjectFunding } from "../services/funding-service";
@@ -41,7 +45,7 @@ async function runLoop(): Promise<void> {
   health.lastTickStartedAt = Date.now();
   health.ticks += 1;
   try {
-    await measure({ label: "worker.tick", owner }, async () => {
+    await measure("worker.tick", async () => {
       await measure("worker.recover-expired", () =>
         projectsRepository.recoverExpiredWork(),
       );
@@ -55,15 +59,12 @@ async function runLoop(): Promise<void> {
           continue;
         if (snapshot.retryAt && snapshot.retryAt > Date.now()) continue;
 
-        let project = await measure("funding.sync", () =>
-          syncProjectFunding(snapshot),
-        );
-        project = projectsRepository.markQueuedIfFunded(project.id) || project;
-
-        if (project.status === "planning") {
+        // Initial planning is independent of project funding. Do it before any
+        // Solana RPC work so a slow/unavailable RPC cannot delay the roadmap.
+        if (snapshot.status === "planning") {
           if (
             !projectsRepository.claimLease(
-              project.id,
+              snapshot.id,
               owner,
               ["planning"],
               workerLeaseMs(),
@@ -72,13 +73,18 @@ async function runLoop(): Promise<void> {
             continue;
           try {
             await measure("project.plan", () =>
-              planProject(project, owner, workerLeaseMs()),
+              planProject(snapshot, owner, workerLeaseMs()),
             );
           } finally {
-            projectsRepository.releaseLease(project.id, owner);
+            projectsRepository.releaseLease(snapshot.id, owner);
           }
           continue;
         }
+
+        let project = await measure("funding.sync", () =>
+          syncProjectFunding(snapshot),
+        );
+        project = projectsRepository.markQueuedIfFunded(project.id) || project;
 
         if (project.status === "queued") {
           const next = project.milestones[project.done];
@@ -122,15 +128,36 @@ async function runLoop(): Promise<void> {
   } finally {
     health.lastTickFinishedAt = Date.now();
     running = false;
-    if (wakePending) {
+    if (wakePending && started) {
       wakePending = false;
       queueMicrotask(() => void runLoop());
+    } else if (!started) {
+      wakePending = false;
     }
   }
 }
 
+/**
+ * Ensure the autonomous worker exists when the web process is configured to
+ * embed it. This deliberately lives below the HTTP entrypoint so CrowdClaw
+ * also works when TradJS is launched through its own CLI instead of server.ts.
+ */
+export function ensureAgentWorker(): boolean {
+  if (started) return true;
+  if (!embeddedWorkerEnabled()) return false;
+  startAgentWorker();
+  return started;
+}
+
 export function wakeAgentWorker(): void {
-  if (!started) return;
+  // Project creation is itself a valid bootstrap point. If the web app was
+  // launched through `tradjs serve`, server.ts was never executed, so start
+  // the embedded worker here before attempting to wake it. startAgentWorker()
+  // already kicks the first tick, so no second wake is needed in that case.
+  if (!started) {
+    ensureAgentWorker();
+    return;
+  }
   if (running) {
     wakePending = true;
     return;
@@ -138,22 +165,29 @@ export function wakeAgentWorker(): void {
   queueMicrotask(() => void runLoop());
 }
 
+export function stopAgentWorker(): void {
+  if (timer) clearInterval(timer);
+  timer = null;
+  wakePending = false;
+  if (!started) return;
+  started = false;
+  const expiredLeases = projectsRepository.expireOwnedLeases(owner);
+  log("info", "worker.stopped", { owner, expiredLeases });
+}
+
 export function startAgentWorker(): () => void {
-  if (started) return () => {};
-  started = true;
-  health.startedAt = Date.now();
-  log("info", "worker.started", {
-    owner,
-    intervalMs: workerIntervalMs(),
-    leaseMs: workerLeaseMs(),
-  });
-  void runLoop();
-  timer = setInterval(() => void runLoop(), workerIntervalMs());
-  return () => {
-    if (timer) clearInterval(timer);
-    timer = null;
-    started = false;
-    const expiredLeases = projectsRepository.expireOwnedLeases(owner);
-    log("info", "worker.stopped", { owner, expiredLeases });
-  };
+  if (!started) {
+    started = true;
+    health.startedAt = Date.now();
+    log("info", "worker.started", {
+      owner,
+      intervalMs: workerIntervalMs(),
+      leaseMs: workerLeaseMs(),
+    });
+    void runLoop();
+    timer = setInterval(() => void runLoop(), workerIntervalMs());
+  }
+  // Always return the real shared stop function. A second bootstrap path must
+  // not receive a no-op cleanup merely because another path started first.
+  return stopAgentWorker;
 }

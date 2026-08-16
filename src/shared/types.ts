@@ -108,6 +108,26 @@ export type Donation = {
   confirmedAt: number;
 };
 
+export type Supporter = {
+  address: string;
+  donatedLamports: number;
+  influenceEarned: number;
+  influenceSpent: number;
+  influenceAvailable: number;
+};
+
+export type Steering = {
+  id: string;
+  projectId: string;
+  fromAddress: string;
+  instruction: string;
+  influence: number;
+  status: "open" | "consumed";
+  createdAt: number;
+  consumedAt: number;
+  consumedMilestoneIndex: number;
+};
+
 export type LedgerKind =
   "funding" | "manual" | "milestone_spend" | "legacy_funding" | "legacy_spend";
 
@@ -141,6 +161,8 @@ export type ProjectBundle = {
   runs: AgentRun[];
   events: ProjectEvent[];
   donations: Donation[];
+  supporters: Supporter[];
+  steering: Steering[];
   ledger: CreditLedgerEntry[];
   usage: UsageSummary;
   lamportsPerCredit: number;

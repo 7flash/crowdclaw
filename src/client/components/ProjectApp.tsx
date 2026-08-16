@@ -10,6 +10,9 @@ export type ProjectActions = {
   syncFunding: () => void;
   devFund: () => void;
   share: () => void;
+  setSteerText: (value: string) => void;
+  setSteerAmount: (value: string) => void;
+  steer: () => void;
 };
 
 export function ProjectApp(props: {
@@ -22,6 +25,9 @@ export function ProjectApp(props: {
   artifactCode: string | null;
   artifactCodeVersion: number | null;
   toast: string | null;
+  steerText: string;
+  steerAmount: string;
+  steering: boolean;
   actions: ProjectActions;
 }) {
   return (
@@ -36,12 +42,18 @@ export function ProjectApp(props: {
         selectedVersion={props.selectedVersion}
         artifactCode={props.artifactCode}
         artifactCodeVersion={props.artifactCodeVersion}
+        steerText={props.steerText}
+        steerAmount={props.steerAmount}
+        steering={props.steering}
         onTab={props.actions.setTab}
         onVersion={props.actions.selectVersion}
         onCopyWallet={props.actions.copyWallet}
         onSyncFunding={props.actions.syncFunding}
         onDevFund={props.actions.devFund}
         onShare={props.actions.share}
+        onSteerText={props.actions.setSteerText}
+        onSteerAmount={props.actions.setSteerAmount}
+        onSteer={props.actions.steer}
       />
       {props.toast ? <div className="cc-toast">{props.toast}</div> : null}
     </div>

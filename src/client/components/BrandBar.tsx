@@ -8,9 +8,6 @@ export function BrandBar() {
         >
           Crowd<span className="text-[var(--claw)]">Claw</span>
         </a>
-        <span className="font-data ml-auto rounded-full border border-[var(--line)] px-[11px] py-1.5 text-[9px] uppercase tracking-[.12em] text-[var(--dimmer)]">
-          <i className="not-italic text-[var(--mint)]">●</i> autonomous
-        </span>
       </div>
     </div>
   );

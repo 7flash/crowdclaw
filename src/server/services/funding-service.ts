@@ -16,44 +16,41 @@ export async function syncProjectFunding(
     return project;
 
   try {
-    const result = await measure(
-      { label: "funding.sync", projectId: project.id },
-      async () => {
-        const lamports = await measure("wallet.balance", () =>
-          getBalanceLamports(project.walletAddress),
-        );
-        const stored = await measure("db.funding.store", () =>
-          projectsRepository.setFunding(project.id, lamports),
-        );
-        if (!stored) throw new Error("project disappeared during funding sync");
+    const result = await measure("funding.sync", async () => {
+      const lamports = await measure("wallet.balance", () =>
+        getBalanceLamports(project.walletAddress),
+      );
+      const stored = await measure("db.funding.store", () =>
+        projectsRepository.setFunding(project.id, lamports),
+      );
+      if (!stored) throw new Error("project disappeared during funding sync");
 
-        try {
-          const known = new Set(
-            projectsRepository.donationSignatures(project.id, 200),
+      try {
+        const known = new Set(
+          projectsRepository.donationSignatures(project.id, 200),
+        );
+        const transfers = await measure("wallet.inbound.index", () =>
+          getRecentInboundTransfers(project.walletAddress, known),
+        );
+        const inserted = await measure("db.donations.store", () =>
+          projectsRepository.recordDonations(project.id, transfers),
+        );
+        for (const donation of inserted) {
+          projectsRepository.event(
+            project.id,
+            "funding.donation",
+            `Indexed ${donation.credits.toFixed(2)} build credits of inbound SOL from ${short(donation.fromAddress)}.`,
           );
-          const transfers = await measure("wallet.inbound.index", () =>
-            getRecentInboundTransfers(project.walletAddress, known),
-          );
-          const inserted = await measure("db.donations.store", () =>
-            projectsRepository.recordDonations(project.id, transfers),
-          );
-          for (const donation of inserted) {
-            projectsRepository.event(
-              project.id,
-              "funding.donation",
-              `Indexed ${donation.credits.toFixed(2)} build credits of inbound SOL from ${short(donation.fromAddress)}.`,
-            );
-          }
-        } catch (error) {
-          log("warn", "funding.donation_index_failed", {
-            projectId: project.id,
-            error,
-          });
         }
+      } catch (error) {
+        log("warn", "funding.donation_index_failed", {
+          projectId: project.id,
+          error,
+        });
+      }
 
-        return stored;
-      },
-    );
+      return stored;
+    });
     if (!result) return project;
     if (result.newlyCreditedLamports > 0) {
       const credits = result.newlyCreditedLamports / lamportsPerCredit();

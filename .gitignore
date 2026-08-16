@@ -5,3 +5,8 @@ data/*.sqlite-*
 .DS_Store
 bun.lock
 package-lock.json
+*.db
+*.db-shm
+*.db-wal
+.config.toml
+

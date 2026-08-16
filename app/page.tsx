@@ -1,5 +1,6 @@
 import { HomeView } from "../src/client/components/HomeView";
 import { projectsRepository } from "../src/server/db/project-repository";
+import { lamportsPerCredit } from "../src/server/config";
 
 const noop = () => {};
 
@@ -15,10 +16,9 @@ export default function Page() {
         projects={projects}
         creating={false}
         planningProject={null}
-        visibleMilestones={0}
         draft=""
         onDraft={noop}
-        onSeed={noop}
+        lamportsPerCredit={lamportsPerCredit()}
         onCreate={noop}
       />
     </main>
