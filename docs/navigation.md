@@ -22,10 +22,10 @@ These are progressive enhancement, never routing infrastructure.
 
 A browser may restore either document from Back/Forward Cache instead of constructing it again.
 
-- Home handles persisted `pageshow` by clearing transient creation/planning animation state and refreshing the project list.
-- Project handles persisted `pageshow` by immediately fetching the latest project bundle.
+- Home closes its planning `EventSource`/fallback timer on `pagehide`. A persisted `pageshow` clears transient creation state and refreshes the project list.
+- Project closes its live `EventSource`/fallback timer on `pagehide`. A persisted `pageshow` fetches the latest bundle and reconnects the live stream.
 
-Do not abort page resources on `pagehide`: doing so can leave a BFCache-restored page with dead resources. Normal document destruction is sufficient for non-BFCache navigations.
+This makes each live connection explicitly document-local while still allowing BFCache restores to recover cleanly.
 
 ## Agent lifetime
 

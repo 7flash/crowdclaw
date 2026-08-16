@@ -81,6 +81,7 @@ const RunSchema = z.object({
   error: z.string().default(""),
   startedAt: z.number().int(),
   finishedAt: z.number().int().default(0),
+  chargedCredits: z.number().default(0),
 });
 
 const EventSchema = z.object({
@@ -88,6 +89,36 @@ const EventSchema = z.object({
   projectId: z.string(),
   type: z.string(),
   message: z.string(),
+  createdAt: z.number().int(),
+});
+
+const DonationSchema = z.object({
+  donationId: z.string(),
+  projectId: z.string(),
+  signature: z.string(),
+  fromAddress: z.string(),
+  lamports: z.number().int(),
+  credits: z.number(),
+  slot: z.number().int(),
+  blockTime: z.number().int(),
+  confirmedAt: z.number().int(),
+});
+
+const CreditLedgerSchema = z.object({
+  ledgerId: z.string(),
+  projectId: z.string(),
+  kind: z.enum([
+    "funding",
+    "manual",
+    "milestone_spend",
+    "legacy_funding",
+    "legacy_spend",
+  ]),
+  credits: z.number(),
+  runId: z.string().default(""),
+  milestoneIndex: z.number().int().default(-1),
+  reference: z.string().default(""),
+  note: z.string().default(""),
   createdAt: z.number().int(),
 });
 
@@ -111,6 +142,8 @@ export const db = new Database(dbPath, {
   runs: RunSchema,
   events: EventSchema,
   fundingObservations: FundingObservationSchema,
+  donations: DonationSchema,
+  creditLedger: CreditLedgerSchema,
 });
 
 export function probeDatabase(): void {

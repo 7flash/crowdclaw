@@ -3,6 +3,8 @@ import { contextWindow, lamportsPerCredit } from "../config";
 import type {
   AgentRun,
   Artifact,
+  CreditLedgerEntry,
+  Donation,
   ArtifactSummary,
   Milestone,
   Project,
@@ -96,6 +98,7 @@ function runFromRow(row: any): AgentRun {
     error: row.error || "",
     startedAt: row.startedAt,
     finishedAt: Number(row.finishedAt || 0),
+    chargedCredits: Number(row.chargedCredits || 0),
   };
 }
 
@@ -107,6 +110,83 @@ function eventFromRow(row: any): ProjectEvent {
     message: row.message,
     createdAt: row.createdAt,
   };
+}
+
+function donationFromRow(row: any): Donation {
+  return {
+    id: row.donationId,
+    projectId: row.projectId,
+    signature: row.signature,
+    fromAddress: row.fromAddress || "",
+    lamports: Number(row.lamports || 0),
+    credits: Number(row.credits || 0),
+    slot: Number(row.slot || 0),
+    blockTime: Number(row.blockTime || 0),
+    confirmedAt: Number(row.confirmedAt || 0),
+  };
+}
+
+function ledgerFromRow(row: any): CreditLedgerEntry {
+  return {
+    id: row.ledgerId,
+    projectId: row.projectId,
+    kind: row.kind,
+    credits: Number(row.credits || 0),
+    runId: row.runId || "",
+    milestoneIndex: Number(row.milestoneIndex ?? -1),
+    reference: row.reference || "",
+    note: row.note || "",
+    createdAt: Number(row.createdAt || 0),
+  };
+}
+
+function insertLedger(input: Omit<CreditLedgerEntry, "id">): CreditLedgerEntry {
+  return ledgerFromRow(
+    db.creditLedger.insert({
+      ledgerId: uid("l"),
+      projectId: input.projectId,
+      kind: input.kind,
+      credits: round2(input.credits),
+      runId: input.runId || "",
+      milestoneIndex: input.milestoneIndex,
+      reference: input.reference || "",
+      note: input.note.slice(0, 300),
+      createdAt: input.createdAt,
+    }) as any,
+  );
+}
+
+function backfillLedgerIfNeeded(row: any): void {
+  const existing = db.creditLedger
+    .select()
+    .where({ projectId: row.projectId })
+    .first() as any | null;
+  if (existing) return;
+  const project = projectFromRow(row);
+  if (project.fundedCredits > 0) {
+    insertLedger({
+      projectId: project.id,
+      kind: "legacy_funding",
+      credits: project.fundedCredits,
+      runId: "",
+      milestoneIndex: -1,
+      reference: "migration",
+      note: "Opening funding balance carried forward from the pre-ledger project state.",
+      createdAt: project.createdAt,
+    });
+  }
+  if (project.spentCredits > 0) {
+    insertLedger({
+      projectId: project.id,
+      kind: "legacy_spend",
+      credits: -project.spentCredits,
+      runId: "",
+      milestoneIndex: Math.max(-1, project.done - 1),
+      reference: "migration",
+      note: "Opening milestone spend carried forward from the pre-ledger project state.",
+      createdAt: project.updatedAt,
+    });
+  }
 }
 
 function rowByProjectId(projectId: string): any | null {
@@ -161,17 +241,23 @@ export const projectsRepository = {
   },
 
   bundle(projectId: string): ProjectBundle | null {
-    const project = this.get(projectId);
-    if (!project) return null;
+    const row = rowByProjectId(projectId);
+    if (!row) return null;
+    backfillLedgerIfNeeded(row);
+    const project = projectFromRow(row);
     const artifacts = this.artifactSummaries(projectId);
     const allRuns = this.runs(projectId, 500);
     const runs = allRuns.slice(0, 40);
     const events = this.events(projectId, 40);
+    const donations = this.donations(projectId, 20);
+    const ledger = this.ledger(projectId, 40);
     return {
       project,
       artifacts,
       runs,
       events,
+      donations,
+      ledger,
       usage: usageFromRuns(allRuns, project),
       lamportsPerCredit: lamportsPerCredit(),
       devFundingEnabled: process.env.ALLOW_DEV_FUNDING === "1",
@@ -226,6 +312,7 @@ export const projectsRepository = {
     db.transaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
+      backfillLedgerIfNeeded(row);
       const observed = Math.max(0, Math.floor(lamports));
       const previousObserved = Math.max(0, Number(row.onchainLamports || 0));
       const previousCredited = Math.max(
@@ -240,15 +327,29 @@ export const projectsRepository = {
       row.fundingError = error;
       row.updatedAt = now();
       if (observed !== previousObserved || delta > 0) {
+        const observationId = uid("fo");
+        const observedAt = now();
         db.fundingObservations.insert({
-          observationId: uid("fo"),
+          observationId,
           projectId,
           observedLamports: observed,
           creditedLamports: credited,
           deltaCreditedLamports: delta,
           source: "solana_balance",
-          createdAt: now(),
+          createdAt: observedAt,
         });
+        if (delta > 0) {
+          insertLedger({
+            projectId,
+            kind: "funding",
+            credits: delta / lamportsPerCredit(),
+            runId: "",
+            milestoneIndex: -1,
+            reference: observationId,
+            note: "Confirmed increase in the project wallet balance.",
+            createdAt: observedAt,
+          });
+        }
       }
       result = { project: projectFromRow(row), newlyCreditedLamports: delta };
     });
@@ -270,8 +371,20 @@ export const projectsRepository = {
     db.transaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
-      row.manualCredits = round2(Number(row.manualCredits || 0) + credits);
+      backfillLedgerIfNeeded(row);
+      const amount = round2(credits);
+      row.manualCredits = round2(Number(row.manualCredits || 0) + amount);
       row.updatedAt = now();
+      insertLedger({
+        projectId,
+        kind: "manual",
+        credits: amount,
+        runId: "",
+        milestoneIndex: -1,
+        reference: "dev",
+        note: "Development-only build credit.",
+        createdAt: now(),
+      });
       result = projectFromRow(row);
     });
     return result;
@@ -497,6 +610,7 @@ export const projectsRepository = {
     db.transaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) throw new Error("project not found");
+      backfillLedgerIfNeeded(row);
       if (Number(row.done || 0) !== expectedDone)
         throw new Error("project advanced while build was running");
       if (row.currentRunId !== artifact.runId)
@@ -525,6 +639,17 @@ export const projectsRepository = {
       row.spentCredits = round2(
         Number(row.spentCredits || 0) + current.costCredits,
       );
+      insertLedger({
+        projectId,
+        kind: "milestone_spend",
+        credits: -current.costCredits,
+        runId: artifact.runId,
+        milestoneIndex: expectedDone,
+        reference: artifact.sha256,
+        note: `Shipped v${artifact.version}: ${current.title}.`,
+        createdAt: artifact.createdAt,
+      });
+      run.chargedCredits = current.costCredits;
       row.reservedCredits = 0;
       row.currentRunId = null;
       row.streamPreview = "";
@@ -610,6 +735,7 @@ export const projectsRepository = {
       error: "",
       startedAt,
       finishedAt: 0,
+      chargedCredits: 0,
     }) as any;
     return runFromRow(row);
   },
@@ -735,6 +861,76 @@ export const projectsRepository = {
     const row = db.artifacts.select().where({ projectId, version }).first() as
       any | null;
     return row ? artifactFromRow(row) : null;
+  },
+
+  donationSignatures(projectId: string, limit = 100): string[] {
+    const rows = db.donations
+      .select()
+      .where({ projectId })
+      .orderBy("confirmedAt", "DESC")
+      .limit(limit)
+      .all() as any[];
+    return rows.map((row) => String(row.signature));
+  },
+
+  recordDonations(
+    projectId: string,
+    transfers: Array<{
+      signature: string;
+      fromAddress: string;
+      lamports: number;
+      slot: number;
+      blockTime: number;
+    }>,
+  ): Donation[] {
+    const inserted: Donation[] = [];
+    db.transaction(() => {
+      for (const transfer of transfers) {
+        if (!transfer.signature || transfer.lamports <= 0) continue;
+        const exists = db.donations
+          .select()
+          .where({ projectId, signature: transfer.signature })
+          .first() as any | null;
+        if (exists) continue;
+        const confirmedAt =
+          transfer.blockTime > 0 ? transfer.blockTime * 1000 : now();
+        const row = db.donations.insert({
+          donationId: uid("d"),
+          projectId,
+          signature: transfer.signature,
+          fromAddress: transfer.fromAddress || "unknown",
+          lamports: Math.floor(transfer.lamports),
+          credits: round2(transfer.lamports / lamportsPerCredit()),
+          slot: Math.floor(transfer.slot || 0),
+          blockTime: Math.floor(transfer.blockTime || 0),
+          confirmedAt,
+        }) as any;
+        inserted.push(donationFromRow(row));
+      }
+    });
+    return inserted;
+  },
+
+  donations(projectId: string, limit = 20): Donation[] {
+    const rows = db.donations
+      .select()
+      .where({ projectId })
+      .orderBy("confirmedAt", "DESC")
+      .limit(limit)
+      .all() as any[];
+    return rows.map(donationFromRow);
+  },
+
+  ledger(projectId: string, limit = 40): CreditLedgerEntry[] {
+    const row = rowByProjectId(projectId);
+    if (row) backfillLedgerIfNeeded(row);
+    const rows = db.creditLedger
+      .select()
+      .where({ projectId })
+      .orderBy("createdAt", "DESC")
+      .limit(limit)
+      .all() as any[];
+    return rows.map(ledgerFromRow);
   },
 
   event(projectId: string, type: string, message: string): ProjectEvent {

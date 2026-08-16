@@ -85,6 +85,7 @@ export type AgentRun = {
   error: string;
   startedAt: number;
   finishedAt: number;
+  chargedCredits: number;
 };
 
 export type ProjectEvent = {
@@ -92,6 +93,33 @@ export type ProjectEvent = {
   projectId: string;
   type: string;
   message: string;
+  createdAt: number;
+};
+
+export type Donation = {
+  id: string;
+  projectId: string;
+  signature: string;
+  fromAddress: string;
+  lamports: number;
+  credits: number;
+  slot: number;
+  blockTime: number;
+  confirmedAt: number;
+};
+
+export type LedgerKind =
+  "funding" | "manual" | "milestone_spend" | "legacy_funding" | "legacy_spend";
+
+export type CreditLedgerEntry = {
+  id: string;
+  projectId: string;
+  kind: LedgerKind;
+  credits: number;
+  runId: string;
+  milestoneIndex: number;
+  reference: string;
+  note: string;
   createdAt: number;
 };
 
@@ -112,6 +140,8 @@ export type ProjectBundle = {
   artifacts: ArtifactSummary[];
   runs: AgentRun[];
   events: ProjectEvent[];
+  donations: Donation[];
+  ledger: CreditLedgerEntry[];
   usage: UsageSummary;
   lamportsPerCredit: number;
   devFundingEnabled: boolean;

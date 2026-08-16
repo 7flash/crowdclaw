@@ -29,6 +29,37 @@ assert(
   restoredFunding?.newlyCreditedLamports === 0,
   "restoring a prior high-water balance must not double-credit",
 );
+const fundingLedger = projectsRepository.ledger(project.id);
+assert(
+  fundingLedger.filter((entry) => entry.kind === "funding").length === 1,
+  "wallet high-water funding should create one ledger credit",
+);
+assert(
+  fundingLedger.find((entry) => entry.kind === "funding")?.credits === 5,
+  "funding ledger should record five credits",
+);
+projectsRepository.recordDonations(project.id, [
+  {
+    signature: "smoke-donation",
+    fromAddress: "DonorWallet",
+    lamports: 500,
+    slot: 1,
+    blockTime: 1,
+  },
+]);
+projectsRepository.recordDonations(project.id, [
+  {
+    signature: "smoke-donation",
+    fromAddress: "DonorWallet",
+    lamports: 500,
+    slot: 1,
+    blockTime: 1,
+  },
+]);
+assert(
+  projectsRepository.donations(project.id).length === 1,
+  "donation signatures must be idempotent",
+);
 
 const planRun = projectsRepository.createRun({
   projectId: project.id,
@@ -102,6 +133,45 @@ assert(
   projectsRepository.get(project.id)?.reservedCredits === 0,
   "current run should release its own reservation",
 );
-console.log("CrowdClaw production smoke passed");
+
+const successfulRun = projectsRepository.createRun({
+  projectId: project.id,
+  kind: "build",
+  milestoneIndex: 0,
+  model: "smoke",
+});
+projectsRepository.reserveNextMilestone(project.id, 0, successfulRun.id);
+projectsRepository.ship(
+  project.id,
+  0,
+  {
+    projectId: project.id,
+    version: 1,
+    milestoneTitle: "Playable loop",
+    html: "<!doctype html><html><body><script>/* smoke */</script></body></html>",
+    sha256: "published",
+    runId: successfulRun.id,
+    createdAt: Date.now(),
+  },
+  toMilestone({ title: "Rolling improvement", costCredits: 2 }),
+);
+const settledRun = projectsRepository
+  .runs(project.id)
+  .find((run) => run.id === successfulRun.id);
+assert(
+  settledRun?.chargedCredits === 2,
+  "successful run should record its settled milestone charge",
+);
+assert(
+  projectsRepository
+    .ledger(project.id)
+    .some((entry) => entry.kind === "milestone_spend" && entry.credits === -2),
+  "shipping should append a milestone debit to the ledger",
+);
+assert(
+  projectsRepository.get(project.id)?.spentCredits === 2,
+  "shipping should settle the reserved milestone cost",
+);
+console.log("CrowdClaw economics smoke passed");
 
 export {};

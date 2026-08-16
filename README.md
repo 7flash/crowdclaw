@@ -1,4 +1,4 @@
-# CrowdClaw — TradJS 4.3 MPA + jsx-ai autonomous build
+# CrowdClaw — live autonomous build + public funding ledger
 
 CrowdClaw turns a game idea into a durable crowd-funded game-building agent.
 
@@ -26,9 +26,9 @@ Home and a project are separate page applications:
 
 The home page owns only idea creation and the initial three-milestone reveal animation. Once planning is committed, it follows a normal real link to `/projects/:id`. **TradJS 4.3.0 does not intercept links**: the browser performs a real document navigation. TradJS renders both documents with browser-native cross-document View Transitions enabled by default, so navigation can stay visually smooth without becoming an SPA.
 
-Refreshing or directly opening `/projects/:id` works because it is a real server route. The project page renders the current SQLite snapshot before its client script starts polling for live changes.
+Refreshing or directly opening `/projects/:id` works because it is a real server route. The project page renders the current SQLite snapshot before its client script opens a Server-Sent Events snapshot stream for live changes. A slow 5-second HTTP poll runs only while that stream is unavailable or reconnecting.
 
-There is no custom `pushState`, `popstate`, client router, or global CrowdClaw page lifecycle. Each document owns its own JS realm. The home page resets its transient planning state when restored from BFCache; the project page immediately refreshes when restored from BFCache.
+There is no custom `pushState`, `popstate`, client router, or global CrowdClaw page lifecycle. Each document owns its own JS realm. Page-local live streams are closed on `pagehide`; a BFCache restore reconnects them on `pageshow` after refreshing authoritative state.
 
 ### TradJS 4.3 navigation contract
 
@@ -36,6 +36,37 @@ CrowdClaw deliberately relies on ordinary same-origin browser navigation. Links 
 
 TradJS 4.3.0 enables cross-document View Transitions by default when rendering pages. CrowdClaw adds stable `view-transition-name` values for the brand and the planning/project header so compatible browsers can preserve visual continuity. Reduced-motion users get normal navigation without those named transitions.
 
+
+### Live project snapshots
+
+Both Home planning and the Project page subscribe to:
+
+```text
+GET /api/projects/:id/events
+Content-Type: text/event-stream
+```
+
+The endpoint emits an initial `snapshot` event and then emits another full public `ProjectBundle` only when the SQLite-backed bundle changes. Idle connections receive comment keepalives rather than duplicate data. Because the stream reads SQLite instead of an in-process event bus, it works when the TradJS web process and autonomous worker run in separate containers.
+
+`EventSource` reconnects automatically after ordinary network interruptions. While it is disconnected, the client starts a deliberately slow polling fallback; the fallback stops again as soon as the stream opens.
+
+Published game versions are immutable release artifacts. `/artifacts/:projectId/:version` now includes a SHA-256 ETag, immutable caching, release metadata headers, and conditional `304` handling. A small release manifest is also available at `/api/projects/:id/releases/:version`. The project stage exposes an `↗` action to open the current immutable release directly.
+
+### Public funding economics
+
+Wallet balance remains the authoritative source of CrowdClaw build credits. Each confirmed increase in the project wallet high-water mark creates exactly one positive credit-ledger entry; returning to an already-seen balance does not mint credits again. Development credits are recorded separately and are forbidden in production.
+
+The funding synchronizer also indexes recent confirmed inbound SOL transactions for supporter attribution. These transaction rows are **observational only**: they never mint credits themselves, so transaction indexing and wallet-balance accounting cannot double-charge or double-credit a project. A supporter row stores the transaction signature, best-effort paying address, recipient balance delta, slot, block time, and the equivalent build-credit amount.
+
+Successful milestone publication atomically appends a negative `milestone_spend` ledger row and records `chargedCredits` on the completed agent run. Failed or rejected builds keep `chargedCredits = 0` and release their reservation. Existing databases are lazily backfilled with opening funding/spend ledger rows the first time an older project is read or mutated.
+
+The Project page exposes both views live over the existing SSE snapshot stream:
+
+- **supporters** — recent indexed inbound SOL
+- **credit ledger** — funding/manual credits and immutable milestone debits
+- **run charge** — settled charge for a completed run, or the currently reserved amount while work is in progress
+
+See `docs/economics.md` for the accounting invariants.
 
 ### `jsx-ai` agent tool loop
 
@@ -134,7 +165,7 @@ The worker owns execution. Closing the browser, refreshing, or navigating betwee
 - `sqlite-zod-orm`
 - `measure-fn`
 - `@solard/sdk@0.2.3`
-- Solana JSON-RPC balance observation
+- Solana JSON-RPC balance + inbound-transaction observation
 
 `jsx-ai` is listed as `latest` in this package because no concrete package version was provided with the integration example. Pin it to your published version before a production lockfile/release.
 
@@ -197,7 +228,7 @@ The production protections from the previous build remain:
 - run-ID guards against late/stale workers
 - transactional milestone credit reservation
 - failed builds do not charge reserved credits
-- idempotent funding high-water accounting
+- idempotent funding high-water accounting + append-only public credit ledger
 - retry backoff with a terminal failure cap
 - model/RPC timeouts
 - graceful lease expiry on worker shutdown
@@ -223,6 +254,8 @@ app/
     page.tsx
     page.client.tsx
   api/projects/
+    [id]/events/route.ts
+    [id]/releases/[version]/route.ts
   artifacts/[projectId]/[version]/route.ts
 
 src/

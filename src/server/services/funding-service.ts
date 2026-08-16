@@ -1,7 +1,11 @@
 import { measure } from "measure-fn";
 import { fundingSyncMs, lamportsPerCredit } from "../config";
 import { projectsRepository } from "../db/project-repository";
-import { getBalanceLamports } from "../wallets/solana-rpc";
+import { log } from "../log";
+import {
+  getBalanceLamports,
+  getRecentInboundTransfers,
+} from "../wallets/solana-rpc";
 import type { Project } from "../../shared/types";
 
 export async function syncProjectFunding(
@@ -22,6 +26,31 @@ export async function syncProjectFunding(
           projectsRepository.setFunding(project.id, lamports),
         );
         if (!stored) throw new Error("project disappeared during funding sync");
+
+        try {
+          const known = new Set(
+            projectsRepository.donationSignatures(project.id, 200),
+          );
+          const transfers = await m("wallet.inbound.index", () =>
+            getRecentInboundTransfers(project.walletAddress, known),
+          );
+          const inserted = await m("db.donations.store", () =>
+            projectsRepository.recordDonations(project.id, transfers),
+          );
+          for (const donation of inserted) {
+            projectsRepository.event(
+              project.id,
+              "funding.donation",
+              `Indexed ${donation.credits.toFixed(2)} build credits of inbound SOL from ${short(donation.fromAddress)}.`,
+            );
+          }
+        } catch (error) {
+          log("warn", "funding.donation_index_failed", {
+            projectId: project.id,
+            error,
+          });
+        }
+
         return stored;
       },
     );
@@ -41,4 +70,9 @@ export async function syncProjectFunding(
     projectsRepository.setFundingError(project.id, message);
     return projectsRepository.get(project.id) || project;
   }
+}
+
+function short(address: string): string {
+  if (!address || address === "unknown") return "unknown wallet";
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
 }

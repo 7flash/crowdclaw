@@ -21,7 +21,8 @@ export type ProjectViewProps = {
 };
 
 export function ProjectView(props: ProjectViewProps) {
-  const { project, artifacts, runs, events, usage } = props.bundle;
+  const { project, artifacts, runs, events, donations, ledger, usage } =
+    props.bundle;
   const latestArtifact = artifacts[artifacts.length - 1];
   const currentArtifact =
     props.selectedVersion != null
@@ -197,7 +198,7 @@ export function ProjectView(props: ProjectViewProps) {
             ) : null}
           </div>
 
-          <div className="mt-5 grid grid-cols-2 gap-2">
+          <div className="mt-5 grid grid-cols-3 gap-2">
             <Metric
               label="input"
               value={`${currentRun?.usageEstimated ? "~" : ""}${tokens(currentRun?.inputTokens || 0)}`}
@@ -207,6 +208,16 @@ export function ProjectView(props: ProjectViewProps) {
               label="output"
               value={`${currentRun?.usageEstimated || (currentRun?.status === "running" && currentRun.outputTokens === 0 && currentRun.streamChars) ? "~" : ""}${tokens(liveOutputTokens)}`}
               suffix="tok"
+            />
+            <Metric
+              label={currentRun?.status === "complete" ? "charged" : "reserved"}
+              value={number(
+                currentRun?.status === "complete"
+                  ? currentRun.chargedCredits
+                  : project.reservedCredits,
+                2,
+              )}
+              suffix={CREDIT_SYMBOL}
             />
           </div>
 
@@ -408,6 +419,72 @@ export function ProjectView(props: ProjectViewProps) {
         </section>
       ) : null}
 
+      {donations.length ? (
+        <section>
+          <div className="cc-section">
+            <span className="cc-label">supporters</span>
+          </div>
+          <div className="cc-activity">
+            {donations.slice(0, 8).map((donation) => (
+              <div
+                key={donation.id}
+                className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-3 border-b border-[var(--line)] py-2.5 text-[11px] last:border-0"
+              >
+                <span className="font-data text-[var(--dimmer)]">
+                  {ago(donation.confirmedAt)}
+                </span>
+                <span
+                  className="min-w-0 truncate font-data text-[var(--dim)]"
+                  title={donation.fromAddress}
+                >
+                  {shortAddress(donation.fromAddress)}
+                </span>
+                <span className="font-data text-right text-[var(--mint)]">
+                  +{number(donation.lamports / SOL_LAMPORTS, 4)} SOL{" "}
+                  <span className="text-[var(--dimmer)]">
+                    · {number(donation.credits, 2)} {CREDIT_SYMBOL}
+                  </span>
+                </span>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 text-[10px] text-[var(--dimmer)]">
+            Recent confirmed inbound SOL transactions are indexed for
+            attribution. Wallet balance, not transaction indexing, remains the
+            source of build credits.
+          </div>
+        </section>
+      ) : null}
+
+      {ledger.length ? (
+        <section>
+          <div className="cc-section">
+            <span className="cc-label">credit ledger</span>
+          </div>
+          <div className="cc-activity">
+            {ledger.slice(0, 12).map((entry) => (
+              <div
+                key={entry.id}
+                className="grid grid-cols-[72px_minmax(0,1fr)_auto] items-center gap-3 border-b border-[var(--line)] py-2.5 text-[11px] last:border-0"
+              >
+                <span className="font-data text-[var(--dimmer)]">
+                  {ago(entry.createdAt)}
+                </span>
+                <span className="min-w-0 text-[var(--dim)]">
+                  {ledgerLabel(entry.kind, entry.note)}
+                </span>
+                <span
+                  className={`font-data text-right ${entry.credits >= 0 ? "text-[var(--mint)]" : "text-[var(--claw)]"}`}
+                >
+                  {entry.credits >= 0 ? "+" : ""}
+                  {number(entry.credits, 2)} {CREDIT_SYMBOL}
+                </span>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
       {events.length ? (
         <section>
           <div className="cc-section">
@@ -450,6 +527,15 @@ function Metric({
       </div>
     </div>
   );
+}
+
+function ledgerLabel(kind: string, note: string): string {
+  if (kind === "funding") return note || "Confirmed wallet funding";
+  if (kind === "manual") return note || "Development credit";
+  if (kind === "milestone_spend") return note || "Milestone shipped";
+  if (kind === "legacy_funding") return "Opening funding balance";
+  if (kind === "legacy_spend") return "Opening milestone spend";
+  return note || kind;
 }
 
 function statusLabel(status: string): string {
