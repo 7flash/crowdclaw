@@ -3,29 +3,89 @@ import { dirname, resolve } from "node:path";
 import { Database, z } from "sqlite-zod-orm";
 
 const MilestoneSchema = z.object({
-  t: z.string(),
-  c: z.number().int(),
+  title: z.string(),
+  costCredits: z.number(),
+  state: z.enum(["queued", "working", "shipped"]),
+  createdAt: z.number().int(),
+  completedAt: z.number().int().optional(),
+  artifactVersion: z.number().int().optional(),
 });
 
-const GameSchema = z.object({
-  gameId: z.string(),
+const ProjectSchema = z.object({
+  projectId: z.string(),
   name: z.string(),
-  prompt: z.string(),
+  idea: z.string(),
   summary: z.string(),
-  miles: z.array(MilestoneSchema).default([]),
+  status: z.enum([
+    "planning",
+    "waiting_funds",
+    "queued",
+    "working",
+    "validating",
+    "publishing",
+    "completed",
+    "failed",
+  ]),
+  agentId: z.string(),
+  walletAddress: z.string(),
+  milestones: z.array(MilestoneSchema).default([]),
   done: z.number().int().default(0),
-  pool: z.number().default(0),
-  spent: z.number().default(0),
-  creator: z.string(),
-  at: z.number().int(),
+  spentCredits: z.number().default(0),
+  reservedCredits: z.number().default(0),
+  onchainLamports: z.number().default(0),
+  manualCredits: z.number().default(0),
+  currentRunId: z.string().nullable().default(null),
+  agentNote: z.string().default(""),
+  streamPreview: z.string().default(""),
+  lastFundingSyncAt: z.number().int().default(0),
+  fundingError: z.string().default(""),
+  failureCount: z.number().int().default(0),
+  retryAt: z.number().int().default(0),
+  error: z.string().default(""),
+  leaseOwner: z.string().default(""),
+  leaseUntil: z.number().int().default(0),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
 });
 
-const VersionSchema = z.object({
-  gameId: z.string(),
-  n: z.number().int(),
-  code: z.string(),
-  at: z.number().int(),
-  by: z.string(),
+const ArtifactSchema = z.object({
+  artifactId: z.string(),
+  projectId: z.string(),
+  version: z.number().int(),
+  milestoneTitle: z.string(),
+  html: z.string(),
+  sha256: z.string(),
+  runId: z.string(),
+  createdAt: z.number().int(),
+});
+
+const RunSchema = z.object({
+  runId: z.string(),
+  projectId: z.string(),
+  kind: z.enum(["plan", "build"]),
+  status: z.enum(["running", "complete", "failed"]),
+  milestoneIndex: z.number().int(),
+  model: z.string(),
+  inputTokens: z.number().int().default(0),
+  outputTokens: z.number().int().default(0),
+  cacheCreationInputTokens: z.number().int().default(0),
+  cacheReadInputTokens: z.number().int().default(0),
+  lastContextTokens: z.number().int().default(0),
+  contextWindow: z.number().int().default(200000),
+  streamChars: z.number().int().default(0),
+  preview: z.string().default(""),
+  note: z.string().default(""),
+  error: z.string().default(""),
+  startedAt: z.number().int(),
+  finishedAt: z.number().int().default(0),
+});
+
+const EventSchema = z.object({
+  eventId: z.string(),
+  projectId: z.string(),
+  type: z.string(),
+  message: z.string(),
+  createdAt: z.number().int(),
 });
 
 const rawPath = process.env.DATABASE_PATH || "./data/crowdclaw.sqlite";
@@ -33,6 +93,8 @@ const dbPath = rawPath === ":memory:" ? rawPath : resolve(rawPath);
 if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
 
 export const db = new Database(dbPath, {
-  games: GameSchema,
-  versions: VersionSchema,
+  projects: ProjectSchema,
+  artifacts: ArtifactSchema,
+  runs: RunSchema,
+  events: EventSchema,
 });

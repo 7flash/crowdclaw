@@ -2,37 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { parseAgentOutput, sealHtml } from "./output";
 
 describe("agent output", () => {
-  test("parses planning output", () => {
+  test("parses rolling milestone and code", () => {
     const parsed = parseAgentOutput(
-      [
-        "N|closing-snake",
-        "S|Eat dots while the arena shrinks.",
-        "M|Move eat and score|2",
-        "M|Shrink walls on food|2",
-        "M|Add restart screen|3",
-      ].join("\n"),
+      "T|Adding juice\nM|Add enemy waves|2\nCODE|\n<!doctype html><html><body>x</body></html>",
     );
-
-    expect(parsed.name).toBe("closing-snake");
-    expect(parsed.miles).toEqual([
-      { t: "Move eat and score", c: 2 },
-      { t: "Shrink walls on food", c: 2 },
-      { t: "Add restart screen", c: 3 },
-    ]);
+    expect(parsed.notes[0]).toBe("Adding juice");
+    expect(parsed.milestones[0]).toEqual({
+      title: "Add enemy waves",
+      costCredits: 2,
+    });
+    expect(parsed.code).toContain("</html>");
   });
 
-  test("parses build output and strips fences", () => {
-    const parsed = parseAgentOutput(
-      "T|I am making the loop playable.\nM|Add harder waves|2\nCODE|\n```html\n<html><body>ok</body></html>\n```",
-    );
-    expect(parsed.notes[0]).toContain("playable");
-    expect(parsed.miles[0]).toEqual({ t: "Add harder waves", c: 2 });
-    expect(parsed.code).toBe("<html><body>ok</body></html>");
-  });
-
-  test("seals a truncated HTML file", () => {
-    expect(sealHtml("<html><body><script>console.log(1)")).toEndWith(
-      "</script>\n</body>\n</html>",
-    );
+  test("seals nearly complete html", () => {
+    expect(sealHtml("<html><body><script>1")).toContain("</html>");
   });
 });

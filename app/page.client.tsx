@@ -2,131 +2,83 @@ import { render } from "tradjs/client";
 import { App, type AppActions } from "../src/client/components/App";
 import { initialState, type AppState, type Tab } from "../src/client/state";
 import * as api from "../src/client/api";
-import type { Game, StreamEvent } from "../src/shared/types";
-
-const WALLET_KEY = "crowdclaw:me";
-
-function wallet(): string {
-  const existing = localStorage.getItem(WALLET_KEY);
-  if (existing) return existing;
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789";
-  let value = "";
-  for (let i = 0; i < 44; i += 1)
-    value += chars[(Math.random() * chars.length) | 0];
-  localStorage.setItem(WALLET_KEY, value);
-  return value;
-}
+import type { Project, ProjectBundle } from "../src/shared/types";
 
 export default function mount() {
   const root = document.getElementById("crowdclaw-root");
   if (!root) return;
 
-  let state: AppState = initialState(wallet());
-  let toastTimer: ReturnType<typeof setTimeout> | null = null;
+  let state: AppState = { ...initialState };
   let disposed = false;
+  let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const draw = () => render(<App state={state} actions={actions} />, root);
   const patch = (next: Partial<AppState>) => {
     if (disposed) return;
     state = { ...state, ...next };
     draw();
   };
-
-  const suggestedAmount = (game: Game) => {
-    const next = game.miles[game.done || 0];
-    if (!next) return state.amount;
-    const balance = Math.round((game.pool - game.spent) * 100) / 100;
-    const gap = Math.max(0, next.c - balance);
-    return String(gap > 0 ? gap : next.c);
-  };
-
   const toast = (text: string) => {
     if (toastTimer) clearTimeout(toastTimer);
     patch({ toast: text });
     toastTimer = setTimeout(() => patch({ toast: null }), 1600);
   };
 
-  const loadGames = async () => {
+  const setProjectUrl = (id: string | null, replace = false) => {
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set("p", id);
+    else url.searchParams.delete("p");
+    if (replace) history.replaceState({}, "", url);
+    else history.pushState({}, "", url);
+  };
+
+  const loadProjects = async () => {
     try {
-      const games = await api.listGames();
-      patch({ games, loading: false });
+      const projects = await api.listProjects();
+      patch({ projects, loading: false, error: null });
     } catch (error) {
       patch({ loading: false, error: message(error) });
     }
   };
 
-  const openById = async (id: string, showRefresh = false) => {
-    if (showRefresh) patch({ refreshing: true });
+  const openId = async (id: string, refresh = false, updateUrl = false) => {
+    if (refresh) patch({ refreshing: true });
     try {
-      const bundle = await api.getGame(id);
-      const versionsChanged = bundle.versions.length !== state.versions.length;
-      const oldBalance = state.game
-        ? Math.round((state.game.pool - state.game.spent) * 100) / 100
-        : NaN;
-      const newBalance =
-        Math.round((bundle.game.pool - bundle.game.spent) * 100) / 100;
-      const fundingStateChanged =
-        !state.game ||
-        state.game.done !== bundle.game.done ||
-        oldBalance !== newBalance;
+      const bundle = await api.getProject(id);
+      const sameProject = state.bundle?.project.id === id;
+      const priorVersions = sameProject
+        ? state.bundle?.artifacts.length || 0
+        : -1;
+      const changed = !sameProject || priorVersions !== bundle.artifacts.length;
       patch({
-        game: bundle.game,
-        versions: bundle.versions,
-        selectedVersion: versionsChanged ? null : state.selectedVersion,
-        amount: fundingStateChanged
-          ? suggestedAmount(bundle.game)
-          : state.amount,
+        view: "project",
+        bundle,
         refreshing: false,
+        error: null,
+        selectedVersion: changed ? null : state.selectedVersion,
+        artifactCode: changed ? null : state.artifactCode,
+        artifactCodeVersion: changed ? null : state.artifactCodeVersion,
       });
+      if (updateUrl) setProjectUrl(id);
     } catch (error) {
       patch({ refreshing: false, error: message(error) });
     }
   };
 
-  const consumePlan = async (prompt: string) => {
-    patch({
-      view: "plan",
-      planPrompt: prompt,
-      planText: "",
-      planError: null,
-      error: null,
-    });
-    window.scrollTo({ top: 0 });
-    try {
-      const response = await api.plan(prompt, state.wallet);
-      let completed: Game | null = null;
-      await api.readNdjson(response, (event: StreamEvent) => {
-        if (event.type === "stream") patch({ planText: event.text });
-        if (event.type === "complete") completed = event.game;
-      });
-      if (!completed) throw new Error("planning ended without a game");
-      const game = completed as Game;
-      state = {
-        ...state,
-        games: [
-          game,
-          ...state.games.filter((item) => item.id !== game.id),
-        ].slice(0, 30),
-        game,
-        versions: [],
-        amount: suggestedAmount(game),
-        say: "",
-        error: null,
-        selectedVersion: null,
-        tab: "play",
-        view: "game",
-      };
-      draw();
-      window.scrollTo({ top: 0 });
-    } catch (error) {
-      patch({ planError: message(error) });
-    }
-  };
-
   const actions: AppActions = {
     home() {
-      patch({ view: "home", error: null, say: "" });
+      patch({
+        view: "home",
+        bundle: null,
+        error: null,
+        selectedVersion: null,
+        artifactCode: null,
+        artifactCodeVersion: null,
+        tab: "play",
+      });
+      setProjectUrl(null);
       window.scrollTo({ top: 0 });
-      void loadGames();
+      void loadProjects();
     },
     setDraft(value) {
       state.draft = value;
@@ -138,106 +90,187 @@ export default function mount() {
         (root.querySelector("textarea") as HTMLTextAreaElement | null)?.focus(),
       );
     },
-    start() {
-      const prompt = state.draft.trim();
-      if (prompt.length >= 10) void consumePlan(prompt);
-    },
-    retryPlan() {
-      if (state.planPrompt) void consumePlan(state.planPrompt);
-    },
-    open(game) {
-      patch({
-        view: "game",
-        game,
-        versions: [],
-        say: "",
-        error: null,
-        selectedVersion: null,
-        tab: "play",
-        amount: suggestedAmount(game),
-      });
-      window.scrollTo({ top: 0 });
-      void openById(game.id);
-    },
-    setAmount(value) {
-      state.amount = value;
-      draw();
-    },
-    async fund() {
-      if (!state.game || state.busy) return;
-      const amount = Number.parseFloat(state.amount);
-      if (!(amount > 0)) return;
+    async create() {
+      const idea = state.draft.trim();
+      if (idea.length < 10 || state.creating) return;
+      patch({ creating: true, error: null });
       try {
-        const game = await api.fund(state.game.id, amount, state.wallet);
-        patch({ game, amount: suggestedAmount(game), error: null });
-        toast(`+${amount} ◎`);
+        const project = await api.createProject(idea);
+        state = {
+          ...state,
+          creating: false,
+          draft: "",
+          projects: [
+            project,
+            ...state.projects.filter((item) => item.id !== project.id),
+          ],
+          view: "project",
+          bundle: emptyBundle(project),
+          selectedVersion: null,
+          artifactCode: null,
+          artifactCodeVersion: null,
+          tab: "play",
+          error: null,
+        };
+        draw();
+        setProjectUrl(project.id);
+        window.scrollTo({ top: 0 });
+        void openId(project.id, false, false);
+      } catch (error) {
+        patch({ creating: false, error: message(error) });
+      }
+    },
+    open(project) {
+      patch({
+        view: "project",
+        bundle: emptyBundle(project),
+        selectedVersion: null,
+        artifactCode: null,
+        artifactCodeVersion: null,
+        tab: "play",
+        error: null,
+      });
+      setProjectUrl(project.id);
+      window.scrollTo({ top: 0 });
+      void openId(project.id);
+    },
+    setTab(tab: Tab) {
+      patch({ tab });
+      if (tab !== "code") return;
+      const bundle = state.bundle;
+      if (!bundle?.artifacts.length) return;
+      const latest = bundle.artifacts[bundle.artifacts.length - 1];
+      const version = state.selectedVersion ?? latest.version;
+      if (state.artifactCodeVersion === version && state.artifactCode != null)
+        return;
+      void api
+        .getArtifactCode(bundle.project.id, version)
+        .then((code) =>
+          patch({ artifactCode: code, artifactCodeVersion: version }),
+        )
+        .catch((error) => patch({ error: message(error) }));
+    },
+    selectVersion(version: number) {
+      patch({
+        selectedVersion: version,
+        artifactCode: null,
+        artifactCodeVersion: null,
+        tab: "play",
+      });
+    },
+    async copyWallet() {
+      const address = state.bundle?.project.walletAddress;
+      if (!address) return;
+      try {
+        await navigator.clipboard.writeText(address);
+        toast("wallet address copied");
+      } catch {
+        toast(address);
+      }
+    },
+    async syncFunding() {
+      const id = state.bundle?.project.id;
+      if (!id || state.refreshing) return;
+      patch({ refreshing: true });
+      try {
+        await api.syncFunding(id);
+        await openId(id, false, false);
+        toast("funding refreshed");
+      } catch (error) {
+        patch({ refreshing: false, error: message(error) });
+      }
+    },
+    async devFund() {
+      const id = state.bundle?.project.id;
+      if (!id) return;
+      try {
+        await api.devFund(id, 2);
+        await openId(id, false, false);
+        toast("+2 dev credits");
       } catch (error) {
         patch({ error: message(error) });
       }
     },
-    async run() {
-      if (!state.game || state.busy) return;
-      const id = state.game.id;
-      patch({
-        busy: true,
-        stream: "",
-        say: "",
-        error: null,
-        selectedVersion: null,
-      });
+    async share() {
+      const project = state.bundle?.project;
+      if (!project) return;
+      const url = new URL(window.location.href);
+      url.searchParams.set("p", project.id);
       try {
-        const response = await api.run(id, state.wallet);
-        await api.readNdjson(response, (event) => {
-          if (event.type === "stream") patch({ stream: event.text });
-          if (event.type === "say") patch({ say: event.text });
-          if (event.type === "complete") {
-            const versions = event.version
-              ? [
-                  ...state.versions.filter(
-                    (version) => version.n !== event.version!.n,
-                  ),
-                  event.version,
-                ]
-                  .sort((a, b) => a.n - b.n)
-                  .slice(-4)
-              : state.versions;
-            patch({
-              game: event.game,
-              versions,
-              amount: suggestedAmount(event.game),
-              selectedVersion: null,
-            });
-          }
-        });
+        if (navigator.share) {
+          await navigator.share({
+            title: `${project.name} · CrowdClaw`,
+            text: project.summary,
+            url: url.toString(),
+          });
+        } else {
+          await navigator.clipboard.writeText(url.toString());
+          toast("project link copied");
+        }
       } catch (error) {
-        patch({ error: message(error), say: "" });
-      } finally {
-        patch({ busy: false, stream: "" });
+        if ((error as Error)?.name !== "AbortError") toast("could not share");
       }
-    },
-    setTab(tab: Tab) {
-      patch({ tab });
-    },
-    selectVersion(version) {
-      patch({ selectedVersion: version, tab: "play" });
     },
   };
 
-  const draw = () => render(<App state={state} actions={actions} />, root);
+  const onPopState = () => {
+    const id = new URL(window.location.href).searchParams.get("p");
+    if (id) void openId(id);
+    else
+      patch({
+        view: "home",
+        bundle: null,
+        selectedVersion: null,
+        artifactCode: null,
+        artifactCodeVersion: null,
+        tab: "play",
+      });
+  };
+  window.addEventListener("popstate", onPopState);
 
   draw();
-  void loadGames();
+  const initialId = new URL(window.location.href).searchParams.get("p");
+  if (initialId) {
+    patch({ view: "project", loading: false });
+    void openId(initialId);
+  } else {
+    void loadProjects();
+  }
 
   const poll = setInterval(() => {
-    if (!disposed && state.view === "game" && state.game && !state.busy)
-      void openById(state.game.id, true);
-  }, 8000);
+    const id = state.bundle?.project.id;
+    if (!disposed && state.view === "project" && id && !state.refreshing)
+      void openId(id, true, false);
+  }, 3000);
 
   return () => {
     disposed = true;
     clearInterval(poll);
     if (toastTimer) clearTimeout(toastTimer);
+    window.removeEventListener("popstate", onPopState);
     render(null, root);
+  };
+}
+
+function emptyBundle(project: Project): ProjectBundle {
+  return {
+    project,
+    artifacts: [],
+    runs: [],
+    events: [],
+    usage: {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      buildTokens: 0,
+      tokensPerSpentCredit: 0,
+      estimatedFundedTokenRunway: 0,
+      latestContextTokens: 0,
+      contextWindow: 200000,
+      remainingContextTokens: 200000,
+    },
+    lamportsPerCredit: 10_000_000,
+    devFundingEnabled: false,
   };
 }
 

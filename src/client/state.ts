@@ -1,50 +1,36 @@
-import type { Game, Version } from "../shared/types";
+import type { Project, ProjectBundle } from "../shared/types";
 
-export type View = "home" | "plan" | "game";
 export type Tab = "play" | "code";
+export type View = "home" | "project";
 
 export type AppState = {
   view: View;
-  games: Game[];
+  projects: Project[];
+  bundle: ProjectBundle | null;
   loading: boolean;
-  draft: string;
-  planPrompt: string;
-  planText: string;
-  planError: string | null;
-  game: Game | null;
-  versions: Version[];
-  busy: boolean;
-  stream: string;
-  say: string;
-  error: string | null;
+  creating: boolean;
   refreshing: boolean;
-  amount: string;
+  draft: string;
+  error: string | null;
   tab: Tab;
   selectedVersion: number | null;
-  wallet: string;
+  artifactCode: string | null;
+  artifactCodeVersion: number | null;
   toast: string | null;
 };
 
-export function initialState(wallet: string): AppState {
-  return {
-    view: "home",
-    games: [],
-    loading: true,
-    draft: "",
-    planPrompt: "",
-    planText: "",
-    planError: null,
-    game: null,
-    versions: [],
-    busy: false,
-    stream: "",
-    say: "",
-    error: null,
-    refreshing: false,
-    amount: "2",
-    tab: "play",
-    selectedVersion: null,
-    wallet,
-    toast: null,
-  };
-}
+export const initialState: AppState = {
+  view: "home",
+  projects: [],
+  bundle: null,
+  loading: true,
+  creating: false,
+  refreshing: false,
+  draft: "",
+  error: null,
+  tab: "play",
+  selectedVersion: null,
+  artifactCode: null,
+  artifactCodeVersion: null,
+  toast: null,
+};

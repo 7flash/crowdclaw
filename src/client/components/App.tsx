@@ -1,21 +1,20 @@
 import { HomeView } from "./HomeView";
-import { PlanningView } from "./PlanningView";
-import { GameView } from "./GameView";
+import { ProjectView } from "./ProjectView";
 import type { AppState, Tab } from "../state";
-import type { Game } from "../../shared/types";
+import type { Project } from "../../shared/types";
 
 export type AppActions = {
   home: () => void;
   setDraft: (value: string) => void;
   seed: (value: string) => void;
-  start: () => void;
-  retryPlan: () => void;
-  open: (game: Game) => void;
-  setAmount: (value: string) => void;
-  fund: () => void;
-  run: () => void;
+  create: () => void;
+  open: (project: Project) => void;
   setTab: (tab: Tab) => void;
   selectVersion: (version: number) => void;
+  copyWallet: () => void;
+  syncFunding: () => void;
+  devFund: () => void;
+  share: () => void;
 };
 
 export function App({
@@ -35,60 +34,52 @@ export function App({
           >
             Crowd<span className="text-[var(--claw)]">Claw</span>
           </button>
-          <span
-            className="font-data ml-auto cursor-default rounded-full border border-[var(--line)] px-[11px] py-1.5 text-[10px] text-[var(--dimmer)]"
-            title={`off-chain pool · ${state.wallet}`}
-          >
-            <i className="not-italic text-[var(--mint)]">◈</i>{" "}
-            {shortWallet(state.wallet)}
+          <span className="font-data ml-auto rounded-full border border-[var(--line)] px-[11px] py-1.5 text-[9px] uppercase tracking-[.12em] text-[var(--dimmer)]">
+            <i className="not-italic text-[var(--mint)]">●</i> autonomous
           </span>
         </div>
       </div>
 
       {state.view === "home" ? (
         <HomeView
-          games={state.games}
+          projects={state.projects}
           loading={state.loading}
+          creating={state.creating}
           draft={state.draft}
           onDraft={actions.setDraft}
           onSeed={actions.seed}
-          onStart={actions.start}
+          onCreate={actions.create}
           onOpen={actions.open}
         />
-      ) : state.view === "plan" ? (
-        <PlanningView
-          prompt={state.planPrompt}
-          text={state.planText}
-          error={state.planError}
-          onRetry={actions.retryPlan}
-          onBack={actions.home}
-        />
-      ) : state.game ? (
-        <GameView
-          game={state.game}
-          versions={state.versions}
-          busy={state.busy}
-          stream={state.stream}
-          say={state.say}
-          error={state.error}
+      ) : state.bundle ? (
+        <ProjectView
+          bundle={state.bundle}
           refreshing={state.refreshing}
-          amount={state.amount}
+          error={state.error}
           tab={state.tab}
           selectedVersion={state.selectedVersion}
+          artifactCode={state.artifactCode}
+          artifactCodeVersion={state.artifactCodeVersion}
           onHome={actions.home}
-          onAmount={actions.setAmount}
-          onFund={actions.fund}
-          onRun={actions.run}
           onTab={actions.setTab}
           onVersion={actions.selectVersion}
+          onCopyWallet={actions.copyWallet}
+          onSyncFunding={actions.syncFunding}
+          onDevFund={actions.devFund}
+          onShare={actions.share}
         />
-      ) : null}
+      ) : (
+        <div className="mx-auto max-w-[920px] px-5 py-20 text-center text-sm text-[var(--dimmer)]">
+          loading project…
+        </div>
+      )}
 
       {state.toast ? <div className="cc-toast">{state.toast}</div> : null}
+      {state.view === "home" && state.error ? (
+        <div className="mx-auto mt-4 max-w-[660px] px-5 text-sm text-[var(--claw)]">
+          {state.error}
+        </div>
+      ) : null}
     </div>
   );
-}
-
-function shortWallet(wallet: string): string {
-  return wallet ? `${wallet.slice(0, 4)}…${wallet.slice(-4)}` : "……";
 }

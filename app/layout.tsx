@@ -5,6 +5,10 @@ export default function Layout({ children }: { children?: unknown }) {
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#0B1013" />
+        <meta
+          name="description"
+          content="Crowd-funded autonomous agents that continuously build tiny playable games."
+        />
         <title>CrowdClaw</title>
       </head>
       <body>{children}</body>

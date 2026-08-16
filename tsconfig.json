@@ -12,5 +12,5 @@
     "types": ["bun-types"],
     "skipLibCheck": true
   },
-  "include": ["server.ts", "app/**/*.ts", "app/**/*.tsx", "src/**/*.ts", "src/**/*.tsx"]
+  "include": ["server.ts", "worker.ts", "app/**/*.ts", "app/**/*.tsx", "src/**/*.ts", "src/**/*.tsx"]
 }

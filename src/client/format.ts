@@ -1,28 +1,26 @@
-import type { Milestone } from "../shared/types";
+export function shortAddress(address: string): string {
+  return address ? `${address.slice(0, 5)}…${address.slice(-5)}` : "—";
+}
 
-export function parsePlanPreview(text: string): {
-  name: string;
-  summary: string;
-  miles: Milestone[];
-} {
-  const rows = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const read = (prefix: string) =>
-    rows
-      .find((row) => row.startsWith(prefix))
-      ?.slice(2)
-      .trim() || "";
-  const miles = rows
-    .filter((row) => row.startsWith("M|"))
-    .map((row) => {
-      const [t = "", raw = ""] = row.slice(2).split("|");
-      return {
-        t: t.trim(),
-        c: Math.max(1, Math.min(4, Number.parseInt(raw, 10) || 2)),
-      };
-    })
-    .filter((mile) => mile.t);
-  return { name: read("N|"), summary: read("S|"), miles };
+export function number(value: number, digits = 1): string {
+  return new Intl.NumberFormat("en-US", {
+    maximumFractionDigits: digits,
+  }).format(value);
+}
+
+export function tokens(value: number): string {
+  if (value >= 1_000_000) return `${number(value / 1_000_000, 2)}m`;
+  if (value >= 1_000) return `${number(value / 1_000, 1)}k`;
+  return String(Math.max(0, Math.round(value)));
+}
+
+export function ago(timestamp: number): string {
+  if (!timestamp) return "";
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
 }

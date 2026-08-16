@@ -107,3 +107,66 @@ button:disabled { opacity:.28; cursor:not-allowed; }
 @media (prefers-reduced-motion:reduce) {
   *,*::before,*::after { animation:none !important; transition:none !important; }
 }
+
+/* autonomous project UI */
+.cc-panel {
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:#0F181D;
+  padding:15px;
+}
+.cc-meter {
+  height:4px;
+  overflow:hidden;
+  border-radius:99px;
+  background:#17252B;
+}
+.cc-meter > span {
+  display:block;
+  height:100%;
+  min-width:0;
+  border-radius:99px;
+  background:var(--claw);
+  transition:width .35s ease;
+}
+.cc-mini {
+  border:0;
+  background:transparent;
+  padding:2px 0;
+  cursor:pointer;
+  color:var(--dimmer);
+  font-family:var(--mono);
+  font-size:9px;
+  letter-spacing:.12em;
+  text-transform:uppercase;
+}
+.cc-mini:hover { color:var(--bone); }
+.cc-status {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  min-height:20px;
+  border:1px solid var(--line);
+  border-radius:99px;
+  padding:2px 7px;
+  white-space:nowrap;
+  font-family:var(--mono);
+  font-size:8px;
+  line-height:1;
+  letter-spacing:.1em;
+  text-transform:uppercase;
+  color:var(--dimmer);
+}
+.cc-status-planning,.cc-status-queued,.cc-status-working,.cc-status-validating,.cc-status-publishing {
+  border-color:rgba(255,92,43,.32);
+  color:var(--claw);
+}
+.cc-status-waiting_funds { border-color:rgba(239,233,220,.14); color:var(--bone); }
+.cc-status-completed { border-color:rgba(79,227,193,.3); color:var(--mint); }
+.cc-status-failed { border-color:rgba(255,92,43,.3); color:#FF8B68; }
+.cc-activity {
+  border:1px solid var(--line);
+  border-radius:7px;
+  background:rgba(15,24,29,.5);
+  padding:0 12px;
+}

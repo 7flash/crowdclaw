@@ -1,15 +1,18 @@
 {
-  "name": "crowdclaw-tradjs",
-  "version": "1.0.0",
+  "name": "crowdclaw-agentic",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun --watch server.ts",
     "start": "NODE_ENV=production bun server.ts",
+    "worker": "bun worker.ts",
     "check": "tsc --noEmit",
     "test": "bun test"
   },
   "dependencies": {
+    "@solard/sdk": "0.2.3",
+    "ai-jsx": "0.33.1",
     "measure-fn": "4.0.5",
     "sqlite-zod-orm": "3.33.0",
     "tailwindcss": "^4.1.10",
@@ -21,6 +24,11 @@
     "typescript": "^5.9.2"
   },
   "tradjs": {
-    "serverOnly": ["sqlite-zod-orm", "measure-fn"]
+    "serverOnly": [
+      "@solard/sdk",
+      "ai-jsx",
+      "sqlite-zod-orm",
+      "measure-fn"
+    ]
   }
 }

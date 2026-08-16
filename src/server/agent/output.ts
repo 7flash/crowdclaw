@@ -4,7 +4,7 @@ export type ParsedAgentOutput = {
   name: string;
   summary: string;
   notes: string[];
-  miles: Milestone[];
+  milestones: Array<{ title: string; costCredits: number }>;
   code: string;
 };
 
@@ -16,28 +16,42 @@ export function parseAgentOutput(text: string): ParsedAgentOutput {
     .map((line) => line.trim())
     .filter(Boolean);
   const one = (prefix: string) => {
-    const line = rows.find((row) => row.startsWith(prefix));
+    const line = rows.find((item) => item.startsWith(prefix));
     return line ? line.slice(2).trim() : "";
   };
   const notes = rows
-    .filter((row) => row.startsWith("T|"))
-    .map((row) => row.slice(2));
-  const miles = rows
-    .filter((row) => row.startsWith("M|"))
-    .map((row) => {
-      const [title = "", rawCost = ""] = row.slice(2).split("|");
-      const c = Math.max(1, Math.min(4, Number.parseInt(rawCost, 10) || 2));
-      return { t: title.trim(), c };
+    .filter((line) => line.startsWith("T|"))
+    .map((line) => line.slice(2).trim())
+    .filter(Boolean);
+  const milestones = rows
+    .filter((line) => line.startsWith("M|"))
+    .map((line) => {
+      const bits = line.slice(2).split("|");
+      const cost = Number.parseInt(bits[1] || "", 10);
+      return {
+        title: (bits[0] || "").trim(),
+        costCredits: Math.max(1, Math.min(4, Number.isFinite(cost) ? cost : 2)),
+      };
     })
-    .filter((mile) => mile.t);
-
+    .filter((item) => item.title);
   let code = cut === -1 ? "" : text.slice(cut + 5).trim();
   code = code
     .replace(/^```html?\s*/i, "")
     .replace(/```\s*$/, "")
     .trim();
+  return { name: one("N|"), summary: one("S|"), notes, milestones, code };
+}
 
-  return { name: one("N|"), summary: one("S|"), notes, miles, code };
+export function toMilestone(
+  input: { title: string; costCredits: number },
+  createdAt = Date.now(),
+): Milestone {
+  return {
+    title: input.title,
+    costCredits: input.costCredits,
+    state: "queued",
+    createdAt,
+  };
 }
 
 export function sealHtml(code: string): string {

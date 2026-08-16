@@ -1,6 +1,22 @@
+import { contextWindow, modelName } from "../config";
+
 type Message = { role: "user" | "assistant"; content: string };
 
-type Delta = (accumulatedText: string) => void;
+export type AgentUsage = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  lastContextTokens: number;
+  contextWindow: number;
+};
+
+export type AgentResult = {
+  text: string;
+  usage: AgentUsage;
+};
+
+export type Progress = (text: string, usage: AgentUsage) => void;
 
 function apiKey(): string {
   const value = process.env.ANTHROPIC_API_KEY?.trim();
@@ -16,12 +32,40 @@ function maxTokens(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
 }
 
+function blankUsage(): AgentUsage {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    lastContextTokens: 0,
+    contextWindow: contextWindow(),
+  };
+}
+
+function updateUsage(target: AgentUsage, raw: any): void {
+  if (!raw) return;
+  if (Number.isFinite(raw.input_tokens))
+    target.inputTokens = Number(raw.input_tokens);
+  if (Number.isFinite(raw.output_tokens))
+    target.outputTokens = Number(raw.output_tokens);
+  if (Number.isFinite(raw.cache_creation_input_tokens))
+    target.cacheCreationInputTokens = Number(raw.cache_creation_input_tokens);
+  if (Number.isFinite(raw.cache_read_input_tokens))
+    target.cacheReadInputTokens = Number(raw.cache_read_input_tokens);
+  target.lastContextTokens =
+    target.inputTokens +
+    target.outputTokens +
+    target.cacheCreationInputTokens +
+    target.cacheReadInputTokens;
+}
+
 export async function callOnce(
   system: string,
   messages: Message[],
-  onDelta: Delta,
+  onProgress: Progress,
   signal?: AbortSignal,
-): Promise<string> {
+): Promise<AgentResult> {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -30,7 +74,7 @@ export async function callOnce(
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6",
+      model: modelName(),
       max_tokens: maxTokens(),
       stream: true,
       system,
@@ -45,11 +89,11 @@ export async function callOnce(
       `agent unreachable (${response.status})${detail ? `: ${detail}` : ""}`,
     );
   }
-
   if (!response.body) throw new Error("agent returned no response body");
 
-  let out = "";
+  let text = "";
   let buffer = "";
+  const usage = blankUsage();
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
 
@@ -64,29 +108,52 @@ export async function callOnce(
       if (!line.startsWith("data:")) continue;
       const payload = line.slice(5).trim();
       if (!payload || payload === "[DONE]") continue;
+      let data: any;
       try {
-        const data = JSON.parse(payload);
-        if (data.type === "content_block_delta" && data.delta?.text) {
-          out += data.delta.text;
-          onDelta(out);
-        }
+        data = JSON.parse(payload);
       } catch {
-        // A malformed/partial SSE event is ignored; the next complete event continues the stream.
+        continue;
+      }
+
+      if (data.type === "error")
+        throw new Error(
+          data.error?.message || data.error?.type || "agent stream error",
+        );
+      if (data.type === "message_start")
+        updateUsage(usage, data.message?.usage);
+      if (data.type === "message_delta") updateUsage(usage, data.usage);
+      if (data.type === "content_block_delta" && data.delta?.text) {
+        text += data.delta.text;
+        onProgress(text, { ...usage });
+      } else if (
+        data.type === "message_start" ||
+        data.type === "message_delta"
+      ) {
+        onProgress(text, { ...usage });
       }
     }
   }
 
-  return out;
+  usage.lastContextTokens =
+    usage.inputTokens +
+    usage.outputTokens +
+    usage.cacheCreationInputTokens +
+    usage.cacheReadInputTokens;
+  onProgress(text, { ...usage });
+  return { text, usage };
 }
 
 export async function callUntilComplete(
   system: string,
   prompt: string,
-  onText: Delta,
+  onProgress: Progress,
   signal?: AbortSignal,
   rounds = 5,
-): Promise<string> {
+): Promise<AgentResult> {
   let accumulated = "";
+  const total = blankUsage();
+  let lastContextTokens = 0;
+
   for (let i = 0; i < rounds; i += 1) {
     const messages: Message[] =
       i === 0
@@ -101,14 +168,35 @@ export async function callUntilComplete(
             },
           ];
 
-    const chunk = await callOnce(
+    let roundUsage = blankUsage();
+    const result = await callOnce(
       system,
       messages,
-      (text) => onText(accumulated + text),
+      (text, usage) => {
+        roundUsage = usage;
+        onProgress(accumulated + text, {
+          inputTokens: total.inputTokens + usage.inputTokens,
+          outputTokens: total.outputTokens + usage.outputTokens,
+          cacheCreationInputTokens:
+            total.cacheCreationInputTokens + usage.cacheCreationInputTokens,
+          cacheReadInputTokens:
+            total.cacheReadInputTokens + usage.cacheReadInputTokens,
+          lastContextTokens: usage.lastContextTokens,
+          contextWindow: usage.contextWindow,
+        });
+      },
       signal,
     );
-    accumulated += chunk;
+
+    accumulated += result.text;
+    total.inputTokens += roundUsage.inputTokens;
+    total.outputTokens += roundUsage.outputTokens;
+    total.cacheCreationInputTokens += roundUsage.cacheCreationInputTokens;
+    total.cacheReadInputTokens += roundUsage.cacheReadInputTokens;
+    lastContextTokens = roundUsage.lastContextTokens;
     if (/<\/html>/i.test(accumulated)) break;
   }
-  return accumulated;
+
+  total.lastContextTokens = lastContextTokens;
+  return { text: accumulated, usage: total };
 }
