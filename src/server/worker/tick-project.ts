@@ -93,8 +93,10 @@ export async function planProject(
   try {
     await measure(
       { label: "agent.project.plan", projectId: project.id, runId: run.id },
-      async (m) => {
-        const result = await m("jsx-ai.plan", () => planGame(project.idea));
+      async () => {
+        const result = await measure("jsx-ai.plan", () =>
+          planGame(project.idea),
+        );
         if (!result) throw new Error("planning returned no result");
         text = result.text;
         usage = result.usage;
@@ -111,13 +113,13 @@ export async function planProject(
           "Initial roadmap drafted.",
         );
 
-        const parsed = await m("agent.plan.parse", () =>
+        const parsed = await measure("agent.plan.parse", () =>
           parseAgentOutput(text),
         );
         if (!parsed || parsed.milestones.length !== 3)
           throw new Error("planner must return exactly three milestones");
         const milestones = parsed.milestones.map((item) => toMilestone(item));
-        await m("db.plan.publish", () =>
+        await measure("db.plan.publish", () =>
           projectsRepository.setPlanningResult(
             project.id,
             run.id,
@@ -211,13 +213,13 @@ export async function buildNext(
         runId: run.id,
         milestone: milestone.title,
       },
-      async (m) => {
-        const artifacts = await m("db.artifacts.load", () =>
+      async () => {
+        const artifacts = await measure("db.artifacts.load", () =>
           projectsRepository.artifacts(project.id),
         );
         const previous = artifacts?.[artifacts.length - 1];
 
-        const result = await m("jsx-ai.tool-loop", () =>
+        const result = await measure("jsx-ai.tool-loop", () =>
           buildMilestone(reserved, milestone, previous?.html, (activity) => {
             activityText = activity.text;
             usage = activity.usage;
@@ -229,14 +231,16 @@ export async function buildNext(
         activityText = result.activityText;
         writeProgress(activityText, result.summary, result.usage, true);
 
-        await m("db.status.validating", () =>
+        await measure("db.status.validating", () =>
           projectsRepository.setRunStatus(project.id, run.id, "validating", {
             agentNote: "Validating index.html before publishing…",
           }),
         );
 
-        const sealed = await m("artifact.seal", () => sealHtml(result.html));
-        const artifactIssues = await m("artifact.validate", () =>
+        const sealed = await measure("artifact.seal", () =>
+          sealHtml(result.html),
+        );
+        const artifactIssues = await measure("artifact.validate", () =>
           validateArtifactHtml(sealed),
         );
         if (artifactIssues.length)
@@ -245,7 +249,7 @@ export async function buildNext(
           throw new Error("agent did not propose the next rolling milestone");
 
         const nextMilestone = toMilestone(result.nextMilestone);
-        await m("db.status.publishing", () =>
+        await measure("db.status.publishing", () =>
           projectsRepository.setRunStatus(project.id, run.id, "publishing", {
             agentNote: "Publishing the new playable version…",
           }),
@@ -256,7 +260,7 @@ export async function buildNext(
           ...usagePatch(result.usage),
           note: result.summary,
         });
-        await m("artifact.publish", () =>
+        await measure("artifact.publish", () =>
           projectsRepository.ship(
             project.id,
             milestoneIndex,

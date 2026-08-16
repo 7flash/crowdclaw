@@ -41,11 +41,11 @@ async function runLoop(): Promise<void> {
   health.lastTickStartedAt = Date.now();
   health.ticks += 1;
   try {
-    await measure({ label: "worker.tick", owner }, async (m) => {
-      await m("worker.recover-expired", () =>
+    await measure({ label: "worker.tick", owner }, async () => {
+      await measure("worker.recover-expired", () =>
         projectsRepository.recoverExpiredWork(),
       );
-      const projects = await m("db.projects.scan", () =>
+      const projects = await measure("db.projects.scan", () =>
         projectsRepository.list(),
       );
       if (!projects) return;
@@ -55,7 +55,7 @@ async function runLoop(): Promise<void> {
           continue;
         if (snapshot.retryAt && snapshot.retryAt > Date.now()) continue;
 
-        let project = await m("funding.sync", () =>
+        let project = await measure("funding.sync", () =>
           syncProjectFunding(snapshot),
         );
         project = projectsRepository.markQueuedIfFunded(project.id) || project;
@@ -71,7 +71,7 @@ async function runLoop(): Promise<void> {
           )
             continue;
           try {
-            await m("project.plan", () =>
+            await measure("project.plan", () =>
               planProject(project, owner, workerLeaseMs()),
             );
           } finally {
@@ -104,7 +104,7 @@ async function runLoop(): Promise<void> {
           )
             continue;
           try {
-            await m("project.build", () =>
+            await measure("project.build", () =>
               buildNext(project, owner, workerLeaseMs()),
             );
           } finally {

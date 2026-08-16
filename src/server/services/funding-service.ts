@@ -18,11 +18,11 @@ export async function syncProjectFunding(
   try {
     const result = await measure(
       { label: "funding.sync", projectId: project.id },
-      async (m) => {
-        const lamports = await m("wallet.balance", () =>
+      async () => {
+        const lamports = await measure("wallet.balance", () =>
           getBalanceLamports(project.walletAddress),
         );
-        const stored = await m("db.funding.store", () =>
+        const stored = await measure("db.funding.store", () =>
           projectsRepository.setFunding(project.id, lamports),
         );
         if (!stored) throw new Error("project disappeared during funding sync");
@@ -31,10 +31,10 @@ export async function syncProjectFunding(
           const known = new Set(
             projectsRepository.donationSignatures(project.id, 200),
           );
-          const transfers = await m("wallet.inbound.index", () =>
+          const transfers = await measure("wallet.inbound.index", () =>
             getRecentInboundTransfers(project.walletAddress, known),
           );
-          const inserted = await m("db.donations.store", () =>
+          const inserted = await measure("db.donations.store", () =>
             projectsRepository.recordDonations(project.id, transfers),
           );
           for (const donation of inserted) {

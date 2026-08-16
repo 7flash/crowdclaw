@@ -1,3 +1,17 @@
+## measure-fn nesting
+
+CrowdClaw uses the current `measure-fn` contract: measured callbacks do not receive a child `m` function. Nested spans simply call the imported `measure()` again; `measure-fn` preserves trace nesting through the active async context.
+
+```ts
+await measure("api.projects.list", async () => {
+  return await measure("db.projects.list", () => projectsRepository.list());
+});
+```
+
+A regression test scans application/server source to prevent the obsolete `async (m) => m(...)` pattern from returning.
+
+Health probes are available at `/api/health`, `/api/health/live`, and `/api/health/ready`.
+
 # CrowdClaw — live autonomous build + public funding ledger
 
 CrowdClaw turns a game idea into a durable crowd-funded game-building agent.

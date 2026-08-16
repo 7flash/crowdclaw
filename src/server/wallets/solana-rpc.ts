@@ -58,8 +58,8 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
 export async function getBalanceLamports(address: string): Promise<number> {
   const result = await measure(
     { label: "solana.balance", address },
-    async (m) => {
-      const body = await m("rpc.getBalance", () =>
+    async () => {
+      const body = await measure("rpc.getBalance", () =>
         rpc<{ value?: number }>("getBalance", [
           address,
           { commitment: "confirmed" },
@@ -82,8 +82,8 @@ export async function getRecentInboundTransfers(
 ): Promise<InboundTransfer[]> {
   const result = await measure(
     { label: "solana.inbound-transfers", address },
-    async (m) => {
-      const signatures = await m("rpc.getSignaturesForAddress", () =>
+    async () => {
+      const signatures = await measure("rpc.getSignaturesForAddress", () =>
         rpc<SignatureInfo[]>("getSignaturesForAddress", [
           address,
           { limit: Math.max(1, Math.min(50, limit)), commitment: "confirmed" },
@@ -101,7 +101,7 @@ export async function getRecentInboundTransfers(
 
       const transfers: InboundTransfer[] = [];
       for (const item of candidates) {
-        const tx = await m("rpc.getTransaction", () =>
+        const tx = await measure("rpc.getTransaction", () =>
           rpc<TransactionResult>("getTransaction", [
             item.signature,
             {

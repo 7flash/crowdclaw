@@ -9,8 +9,8 @@ import { wakeAgentWorker } from "../../../src/server/worker/worker";
 const CreateBody = z.object({ idea: z.string().trim().min(10).max(2000) });
 
 export async function GET() {
-  const projects = await measure("api.projects.list", async (m) => {
-    return await m("db.projects.list", () => projectsRepository.list());
+  const projects = await measure("api.projects.list", async () => {
+    return await measure("db.projects.list", () => projectsRepository.list());
   });
   return json(projects || []);
 }

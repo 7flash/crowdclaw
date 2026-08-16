@@ -11,23 +11,23 @@ export async function createProject(idea: string): Promise<Project> {
   const id = projectId();
   const project = await measure(
     { label: "project.create", projectId: id, ideaChars: idea.length },
-    async (m) => {
-      const walletAddress = await m("wallet.create", () =>
+    async () => {
+      const walletAddress = await measure("wallet.create", () =>
         createProjectWallet(id),
       );
       if (!walletAddress) throw new Error("failed to provision project wallet");
-      const created = await m("db.project.create", () =>
+      const created = await measure("db.project.create", () =>
         projectsRepository.create({ projectId: id, idea, walletAddress }),
       );
       if (!created) throw new Error("failed to persist project");
-      await m("db.event.created", () =>
+      await measure("db.event.created", () =>
         projectsRepository.event(
           id,
           "project.created",
           "Idea created; autonomous agent assigned.",
         ),
       );
-      await m("db.event.wallet", () =>
+      await measure("db.event.wallet", () =>
         projectsRepository.event(
           id,
           "wallet.created",
@@ -44,8 +44,8 @@ export async function createProject(idea: string): Promise<Project> {
 export async function getProjectBundle(
   projectId: string,
 ): Promise<ProjectBundle | null> {
-  return await measure({ label: "project.bundle", projectId }, async (m) => {
-    return await m("db.project.bundle", () =>
+  return await measure({ label: "project.bundle", projectId }, async () => {
+    return await measure("db.project.bundle", () =>
       projectsRepository.bundle(projectId),
     );
   });

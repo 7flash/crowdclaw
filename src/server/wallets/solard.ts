@@ -11,8 +11,8 @@ function sdk(): Solard {
 export async function createProjectWallet(projectId: string): Promise<string> {
   const address = await measure(
     { label: "wallet.project.create", projectId },
-    async (m) => {
-      const wallet = await m("solard.create-wallet", () =>
+    async () => {
+      const wallet = await measure("solard.create-wallet", () =>
         sdk().createWallet(`crowdclaw-${projectId}`),
       );
       if (!wallet?.address)
