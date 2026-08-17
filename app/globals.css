@@ -157,7 +157,7 @@ button:disabled { opacity:.28; cursor:not-allowed; }
   text-transform:uppercase;
   color:var(--dimmer);
 }
-.cc-status-planning,.cc-status-queued,.cc-status-working,.cc-status-validating,.cc-status-publishing {
+.cc-status-planning,.cc-status-seeding,.cc-status-queued,.cc-status-working,.cc-status-validating,.cc-status-publishing {
   border-color:rgba(255,92,43,.32);
   color:var(--claw);
 }
@@ -265,3 +265,22 @@ button:disabled { opacity:.28; cursor:not-allowed; }
   animation:cc-rise .22s ease-out backwards;
 }
 .cc-activity-row::before { content:'›'; margin-right:8px; color:var(--claw); }
+
+/* first-milestone sponsorship + artifact reveal */
+@keyframes cc-balance-pop { 0% { transform:translateY(5px) scale(.96); opacity:.35; } 55% { transform:translateY(-1px) scale(1.04); opacity:1; } 100% { transform:none; opacity:1; } }
+@keyframes cc-fund-arrive { 0% { opacity:.25; transform:translateX(-8px); background:rgba(79,227,193,.08); } 55% { opacity:1; transform:none; background:rgba(79,227,193,.12); } 100% { background:transparent; } }
+@keyframes cc-fund-pending { 0%,100% { opacity:.5; } 50% { opacity:1; } }
+@keyframes cc-artifact-reveal { from { opacity:0; transform:scale(.985); filter:brightness(.65); } to { opacity:1; transform:none; filter:none; } }
+.cc-balance-pop { display:inline-block; animation:cc-balance-pop .5s cubic-bezier(.2,.9,.2,1); }
+.cc-fund-arrive { animation:cc-fund-arrive .65s cubic-bezier(.2,.9,.2,1); }
+.cc-fund-pending { animation:cc-fund-pending 1.25s ease-in-out infinite; }
+.cc-artifact-reveal { animation:cc-artifact-reveal .45s cubic-bezier(.2,.85,.3,1); transform-origin:center; }
+.cc-supporter-row {
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto 28px;
+  align-items:center;
+  gap:12px;
+  min-height:34px;
+  border-bottom:1px solid var(--line);
+}
+.cc-supporter-row:last-child { border-bottom:0; }

@@ -44,7 +44,7 @@ export function solanaRpcTimeoutMs(): number {
 }
 
 export function fundingSyncMs(): number {
-  return positiveInt("FUNDING_SYNC_MS", 15_000, 1_000);
+  return positiveInt("FUNDING_SYNC_MS", 5_000, 1_000);
 }
 
 export function agentPollMs(): number {
@@ -61,6 +61,22 @@ export function agentSupervisorMs(): number {
 
 export function devFundingEnabled(): boolean {
   return process.env.ALLOW_DEV_FUNDING === "1";
+}
+
+export function treasurySeedEnabled(): boolean {
+  return process.env.TREASURY_SEED_ENABLED !== "0";
+}
+
+export function treasuryWalletName(): string {
+  return process.env.TREASURY_WALLET_NAME?.trim() || "crowdclaw-main";
+}
+
+export function treasuryAutoCreate(): boolean {
+  return process.env.TREASURY_AUTO_CREATE !== "0";
+}
+
+export function treasuryRetryMs(): number {
+  return positiveInt("TREASURY_RETRY_MS", 15_000, 2_000);
 }
 
 export function databasePath(): string {
@@ -104,6 +120,9 @@ export function runtimeConfigIssues(role: "web" | "worker"): string[] {
   // the selected provider cannot run in those inherited child environments.
   const credentialIssue = providerCredentialIssue();
   if (credentialIssue) issues.push(credentialIssue);
+  if (treasurySeedEnabled() && !process.env.SLRD_MASTER_KEY?.trim()) {
+    issues.push("SLRD_MASTER_KEY is required when TREASURY_SEED_ENABLED=1");
+  }
 
   if (production && devFundingEnabled())
     issues.push("ALLOW_DEV_FUNDING must be 0 in production");

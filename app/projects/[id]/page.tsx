@@ -41,7 +41,7 @@ export default function ProjectPage({
   }
 
   return (
-    <main
+    <div
       id="crowdclaw-project"
       data-bundle={JSON.stringify(bundle)}
       className="min-h-screen bg-[var(--void)] text-[var(--bone)]"
@@ -61,6 +61,6 @@ export default function ProjectPage({
         steering={false}
         actions={actions}
       />
-    </main>
+    </div>
   );
 }

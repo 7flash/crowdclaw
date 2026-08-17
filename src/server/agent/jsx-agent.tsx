@@ -49,6 +49,7 @@ The playable artifact rules:
 - Keep the implementation compact, coherent, and reliable.
 - When modifying existing work, read relevant files first unless the full current source is already in context.
 - Do not claim the milestone is complete until the requested gameplay is implemented coherently.
+- Use the status tool for short public activity updates before meaningful work. Keep status to 2-8 words and never reveal chain-of-thought or private reasoning.
 - Finish by calling phase_done with a concise summary plus exactly one concrete rolling milestone that should come next.`;
 
 export type AgentUsage = {
@@ -105,6 +106,17 @@ const ListFilesTool = () => (
     name="list_files"
     description="List all files currently present in the game project"
   />
+);
+
+const StatusTool = () => (
+  <tool
+    name="status"
+    description="Publish one short public activity update. This is not private reasoning; describe only the action being taken now."
+  >
+    <param name="text" type="string" required>
+      2-8 words, concrete and player-facing
+    </param>
+  </tool>
 );
 
 const PhaseDoneTool = () => (
@@ -243,6 +255,21 @@ function executeTool(
 } {
   try {
     switch (call.name) {
+      case "status": {
+        const words = String(call.args.text || "")
+          .trim()
+          .replace(/\s+/g, " ")
+          .split(" ")
+          .filter(Boolean)
+          .slice(0, 8);
+        const text = words.join(" ").slice(0, 100);
+        if (words.length < 2)
+          return {
+            message: toolResult(call, "status requires 2-8 words", true),
+            note: "WORKING",
+          };
+        return { message: toolResult(call, "Status published."), note: text };
+      }
       case "write_file": {
         const path = String(call.args.path || "");
         const content = String(call.args.content || "");
@@ -340,6 +367,7 @@ function buildPromptTree(history: ExtractedMessage[]) {
       <WriteFileTool />
       <ReadFileTool />
       <ListFilesTool />
+      <StatusTool />
       <PhaseDoneTool />
       {history.map((message) => (
         <message
@@ -422,7 +450,7 @@ export async function buildMilestone(
       history.push({ role: "user", content: reminder });
       onActivity({
         text: activityText.slice(-1800),
-        note: "THINK",
+        note: "WORKING",
         usage: total,
       });
       continue;

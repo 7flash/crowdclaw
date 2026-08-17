@@ -15,10 +15,14 @@ describe("minimal public language", () => {
       "Anyone can fund it. Supporters steer what it builds next.",
     );
     expect(project).toContain("SUPPORTERS");
+    expect(project).toContain("CrowdClaw");
+    expect(project).toContain("TREASURY");
     expect(project).toContain("STEER NEXT");
     expect(project).toContain("SOL");
     expect(constants).not.toContain("◎");
     expect(project).not.toContain("build credits");
     expect(project).not.toContain("Roadmap ready");
+    expect(project).not.toContain("Send SOL");
+    expect(project).not.toContain("Confirmed balance");
   });
 });

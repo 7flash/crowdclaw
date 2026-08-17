@@ -1,7 +1,12 @@
 import { serve } from "tradjs/server";
-import { agentSupervisorMs, assertRuntimeConfig } from "./src/server/config";
+import {
+  agentSupervisorMs,
+  assertRuntimeConfig,
+  treasurySeedEnabled,
+} from "./src/server/config";
 import { reconcileProjectAgents } from "./src/server/agents/process-manager";
 import { log } from "./src/server/log";
+import { getTreasuryWallet } from "./src/server/wallets/solard";
 
 assertRuntimeConfig("web");
 
@@ -21,6 +26,14 @@ process.once("SIGINT", () => shutdown("SIGINT"));
 
 const port = Number(process.env.PORT || process.env.BUN_PORT || 3000);
 log("info", "server.starting", { port });
+
+if (treasurySeedEnabled()) {
+  const treasury = await getTreasuryWallet();
+  log("info", "treasury.ready", {
+    name: treasury.name,
+    address: treasury.address,
+  });
+}
 
 await reconcileProjectAgents();
 supervisor = setInterval(

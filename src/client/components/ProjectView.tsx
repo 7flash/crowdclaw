@@ -33,6 +33,7 @@ export function ProjectView(props: ProjectViewProps) {
     runs,
     supporters,
     steering,
+    treasuryGrants,
     usage,
     lamportsPerCredit,
   } = props.bundle;
@@ -51,38 +52,31 @@ export function ProjectView(props: ProjectViewProps) {
     ? currentRun.inputTokens + currentRun.outputTokens
     : usage.totalTokens;
   const contextWindow = currentRun?.contextWindow || usage.contextWindow;
-  const contextUsed =
-    currentRun?.lastContextTokens || usage.latestContextTokens;
-  const sol = project.onchainLamports / SOL_LAMPORTS;
+  const solBalance = project.onchainLamports / SOL_LAMPORTS;
   const availableSol = creditsToSol(
     project.availableCredits,
     lamportsPerCredit,
   );
+  const nextSol = next ? creditsToSol(next.costCredits, lamportsPerCredit) : 0;
+  const seed = treasuryGrants[0];
   const openSteering = steering
     .filter((item) => item.status === "open")
     .sort((a, b) => b.influence - a.influence);
   const stageHeight = currentArtifact
     ? "h-[472px] max-[800px]:h-[340px]"
     : active
-      ? "h-[230px] max-[800px]:h-[190px]"
-      : "h-[132px]";
+      ? "h-[250px] max-[800px]:h-[210px]"
+      : "h-[92px]";
 
   return (
     <main className="mx-auto max-w-[920px] px-5 pb-[72px]">
-      <header className="cc-project-transition flex items-start gap-3 py-4">
+      <header className="cc-project-transition flex items-center gap-3 py-4">
         <a className="cc-icon-link" href="/" aria-label="Back">
           ←
         </a>
-        <div className="min-w-0 flex-1">
-          <h1 className="font-display m-0 text-[clamp(1.7rem,4vw,2.35rem)] font-extrabold uppercase leading-[.9] tracking-[-.015em]">
-            {project.name}
-          </h1>
-          {project.summary ? (
-            <p className="m-0 mt-1 truncate text-[13px] text-[var(--dim)]">
-              {project.summary}
-            </p>
-          ) : null}
-        </div>
+        <h1 className="font-display m-0 min-w-0 flex-1 truncate text-[clamp(1.8rem,4vw,2.45rem)] font-extrabold uppercase leading-[.9] tracking-[-.015em]">
+          {project.name}
+        </h1>
         <button className="cc-btn" onClick={props.onShare}>
           SHARE ↗
         </button>
@@ -93,48 +87,53 @@ export function ProjectView(props: ProjectViewProps) {
           <span
             className={`cc-dot ${active ? "cc-dot-go" : artifacts.length ? "cc-dot-on" : ""}`}
           />
-          <span className="cc-label">
-            {currentArtifact ? `V${currentArtifact.version}` : "V0"}
+          <span className="cc-label text-[var(--bone)]">
+            {statusLabel(project.status)}
           </span>
           <span
             className={`ml-1 h-1.5 w-1.5 rounded-full ${props.liveState === "live" ? "bg-[var(--mint)]" : "bg-[var(--dimmer)]"}`}
             aria-label={props.liveState}
           />
           {active ? <span className="cc-stage-runner" /> : null}
-          {currentArtifact ? (
-            <div className="ml-auto flex gap-0.5">
-              <button
-                className={`cc-tab ${props.tab === "play" ? "cc-tab-on" : ""}`}
-                onClick={() => props.onTab("play")}
-                aria-label="Play"
-              >
-                ▶
-              </button>
-              <button
-                className={`cc-tab ${props.tab === "code" ? "cc-tab-on" : ""}`}
-                onClick={() => props.onTab("code")}
-                aria-label="Code"
-              >
-                {"</>"}
-              </button>
-              <a
-                className="cc-tab no-underline"
-                href={`/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}`}
-                target="_blank"
-                rel="noopener"
-                aria-label={`Open version ${currentArtifact.version}`}
-              >
-                ↗
-              </a>
-            </div>
-          ) : null}
+          <div className="ml-auto flex items-center gap-0.5">
+            {currentArtifact ? (
+              <span className="cc-label mr-2">V{currentArtifact.version}</span>
+            ) : null}
+            {currentArtifact ? (
+              <>
+                <button
+                  className={`cc-tab ${props.tab === "play" ? "cc-tab-on" : ""}`}
+                  onClick={() => props.onTab("play")}
+                  aria-label="Play"
+                >
+                  ▶
+                </button>
+                <button
+                  className={`cc-tab ${props.tab === "code" ? "cc-tab-on" : ""}`}
+                  onClick={() => props.onTab("code")}
+                  aria-label="Code"
+                >
+                  {"</>"}
+                </button>
+                <a
+                  className="cc-tab no-underline"
+                  href={`/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}`}
+                  target="_blank"
+                  rel="noopener"
+                  aria-label={`Open version ${currentArtifact.version}`}
+                >
+                  ↗
+                </a>
+              </>
+            ) : null}
+          </div>
         </div>
         <div className={`relative ${stageHeight}`}>
           {currentArtifact ? (
             props.tab === "play" ? (
               <iframe
                 key={currentArtifact.version}
-                className="block h-full w-full border-0 bg-black"
+                className="cc-artifact-reveal block h-full w-full border-0 bg-black"
                 src={`/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}`}
                 sandbox="allow-scripts allow-pointer-lock"
                 title={`${project.name} v${currentArtifact.version}`}
@@ -155,9 +154,7 @@ export function ProjectView(props: ProjectViewProps) {
             />
           ) : (
             <div className="grid h-full place-items-center">
-              <div className="font-display text-[34px] font-extrabold uppercase text-[#283840]">
-                V0
-              </div>
+              <span className="cc-label">{statusLabel(project.status)}</span>
             </div>
           )}
         </div>
@@ -165,39 +162,35 @@ export function ProjectView(props: ProjectViewProps) {
 
       {project.error || props.error ? (
         <div className="cc-agent-line text-[var(--claw)]">
-          <span className="cc-dot" />
-          <span className="truncate">{props.error || project.error}</span>
+          <span>{props.error || project.error}</span>
         </div>
       ) : null}
 
-      <div className="mt-3 grid gap-3 md:grid-cols-[1fr_1.15fr]">
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
         <section className="cc-panel cc-panel-tight">
           <div className="flex items-center justify-between gap-3">
             <span className="cc-label">AGENT</span>
-            <span className="font-data text-[10px] text-[var(--mint)]">
+            <span className="font-data text-[9px] text-[var(--mint)]">
               {project.agentId}
             </span>
           </div>
-          <div className="mt-3 flex items-end justify-between gap-4">
-            <span className="font-display text-[27px] font-extrabold uppercase leading-none">
-              {statusLabel(project.status)}
-            </span>
-            <span className="font-data text-right text-[10px] text-[var(--dimmer)]">
+          <div className="mt-3 flex items-center gap-3">
+            <div className="cc-meter flex-1">
+              <span
+                style={{
+                  width: `${Math.min(100, contextWindow ? (totalTokens / contextWindow) * 100 : 0)}%`,
+                }}
+              />
+            </div>
+            <span className="font-data whitespace-nowrap text-[9px] text-[var(--dimmer)]">
               {tokens(totalTokens)} / {tokens(contextWindow)} TOK
             </span>
-          </div>
-          <div className="cc-meter mt-3">
-            <span
-              style={{
-                width: `${Math.min(100, contextWindow ? (contextUsed / contextWindow) * 100 : 0)}%`,
-              }}
-            />
           </div>
         </section>
 
         <section className="cc-panel cc-panel-tight">
           <div className="flex items-center justify-between gap-3">
-            <span className="cc-label">SOL</span>
+            <span className="cc-label">TREASURY</span>
             <button
               className="cc-mini"
               onClick={props.onSyncFunding}
@@ -206,15 +199,20 @@ export function ProjectView(props: ProjectViewProps) {
               ↻
             </button>
           </div>
-          <div className="mt-3 flex items-center gap-3">
+          <div className="mt-2 flex items-center gap-3">
             <button
-              className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-left font-data text-[12px] text-[var(--bone)]"
+              className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-left font-data text-[10px] text-[var(--dimmer)]"
               onClick={props.onCopyWallet}
               title={project.walletAddress}
             >
               {shortAddress(project.walletAddress)}
             </button>
-            <span className="font-data text-[12px]">{number(sol, 4)} SOL</span>
+            <span
+              key={project.onchainLamports}
+              className="cc-balance-pop font-data text-[16px] text-[var(--bone)]"
+            >
+              {number(solBalance, 4)} SOL
+            </span>
             <button
               className="cc-btn cc-btn-primary"
               onClick={props.onCopyWallet}
@@ -231,10 +229,8 @@ export function ProjectView(props: ProjectViewProps) {
                   }}
                 />
               </div>
-              <span className="font-data whitespace-nowrap text-[10px] text-[var(--dimmer)]">
-                {number(availableSol, 3)} /{" "}
-                {number(creditsToSol(next.costCredits, lamportsPerCredit), 3)}{" "}
-                SOL
+              <span className="font-data whitespace-nowrap text-[9px] text-[var(--dimmer)]">
+                {number(availableSol, 3)} / {number(nextSol, 3)} SOL
               </span>
             </div>
           ) : null}
@@ -246,104 +242,68 @@ export function ProjectView(props: ProjectViewProps) {
         </section>
       </div>
 
-      <section className="mt-6">
-        <div className="cc-section">
-          <span className="cc-label">ROADMAP</span>
-        </div>
-        <div className="grid gap-[5px]">
-          {shipped.map((mile, index) => {
-            const version = mile.artifactVersion || index + 1;
-            return (
-              <button
-                key={`${mile.title}-${index}`}
-                className={`cc-milestone cc-done ${currentArtifact?.version === version ? "cc-selected" : ""}`}
-                onClick={() => props.onVersion(version)}
-              >
-                <span className="font-data text-[11px] text-[var(--mint)]">
-                  ✓
-                </span>
-                <span className="text-sm leading-[1.35] text-[var(--dim)]">
-                  {mile.title}
-                </span>
-                <span className="font-data text-[10px] text-[var(--dimmer)]">
-                  V{version}
-                </span>
-              </button>
-            );
-          })}
-          {upcoming.map((mile, offset) => {
-            const index = project.done + offset;
-            const current = offset === 0;
-            return (
-              <div
-                key={`${mile.title}-${index}`}
-                className={`cc-milestone ${current ? "cc-next" : "opacity-45"}`}
-              >
-                <span className="font-data text-[11px] text-[var(--dimmer)]">
-                  {current && active ? (
-                    <span className="cc-spinner" />
-                  ) : (
-                    index + 1
-                  )}
-                </span>
-                <span className="text-sm leading-[1.35]">{mile.title}</span>
-                <span
-                  className={`font-data whitespace-nowrap text-[10px] ${current ? "text-[var(--claw)]" : "text-[var(--dimmer)]"}`}
-                >
-                  {number(creditsToSol(mile.costCredits, lamportsPerCredit), 3)}{" "}
-                  SOL
-                </span>
-              </div>
-            );
-          })}
-        </div>
-      </section>
+      <Roadmap
+        shipped={shipped}
+        upcoming={upcoming}
+        done={project.done}
+        active={active}
+        currentVersion={currentArtifact?.version}
+        lamportsPerCredit={lamportsPerCredit}
+        onVersion={props.onVersion}
+      />
 
       <div className="mt-6 grid gap-3 md:grid-cols-2">
         <section className="cc-panel cc-panel-tight">
-          <div className="cc-label mb-3">SUPPORTERS</div>
-          {supporters.length ? (
-            <div className="grid gap-0">
-              <div className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-[var(--line)] pb-2 font-data text-[8px] uppercase tracking-[.12em] text-[var(--dimmer)]">
-                <span></span>
-                <span>SOL</span>
-                <span>INFLUENCE</span>
+          <div className="cc-label mb-2">SUPPORTERS</div>
+          <div className="grid">
+            {seed ? (
+              <div
+                key={`${seed.id}-${seed.status}`}
+                className={`cc-supporter-row ${seed.status === "confirmed" ? "cc-fund-arrive" : "cc-fund-pending"}`}
+              >
+                <span className="font-data text-[10px] text-[var(--bone)]">
+                  CrowdClaw
+                </span>
+                <span className="font-data text-[10px]">
+                  +{number(seed.lamports / SOL_LAMPORTS, 4)} SOL
+                </span>
+                <span className="font-data text-[9px] text-[var(--dimmer)]">
+                  {seed.status === "confirmed" ? "✓" : "…"}
+                </span>
               </div>
-              {supporters.slice(0, 8).map((supporter) => (
-                <div
-                  key={supporter.address}
-                  className="grid grid-cols-[1fr_auto_auto] gap-3 border-b border-[var(--line)] py-2.5 font-data text-[10px] last:border-0"
+            ) : null}
+            {supporters.slice(0, 8).map((supporter) => (
+              <div key={supporter.address} className="cc-supporter-row">
+                <span
+                  className="truncate font-data text-[10px] text-[var(--dim)]"
+                  title={supporter.address}
                 >
-                  <span
-                    className="truncate text-[var(--dim)]"
-                    title={supporter.address}
-                  >
-                    {shortAddress(supporter.address)}
-                  </span>
-                  <span>
-                    {number(supporter.donatedLamports / SOL_LAMPORTS, 4)}
-                  </span>
-                  <span className="text-[var(--mint)]">
-                    {number(supporter.influenceAvailable, 2)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="font-display text-[24px] font-extrabold text-[#283840]">
-              —
-            </div>
-          )}
+                  {shortAddress(supporter.address)}
+                </span>
+                <span className="font-data text-[10px]">
+                  {number(supporter.donatedLamports / SOL_LAMPORTS, 4)} SOL
+                </span>
+                <span className="font-data text-[9px] text-[var(--mint)]">
+                  {number(supporter.influenceAvailable, 2)}
+                </span>
+              </div>
+            ))}
+            {!seed && !supporters.length ? (
+              <div className="font-display text-[22px] font-extrabold text-[#283840]">
+                —
+              </div>
+            ) : null}
+          </div>
         </section>
 
         <section className="cc-panel cc-panel-tight">
-          <div className="cc-label mb-3">STEER NEXT</div>
+          <div className="cc-label mb-2">STEER NEXT</div>
           {openSteering.length ? (
-            <div className="mb-3 grid gap-1.5">
-              {openSteering.slice(0, 4).map((item) => (
+            <div className="mb-2 grid gap-1.5">
+              {openSteering.slice(0, 3).map((item) => (
                 <div
                   key={item.id}
-                  className="grid grid-cols-[1fr_auto] gap-3 rounded-[5px] border border-[var(--line)] px-3 py-2 text-[11px]"
+                  className="grid grid-cols-[1fr_auto] gap-3 border-b border-[var(--line)] py-2 text-[11px]"
                 >
                   <span>{item.instruction}</span>
                   <span className="font-data text-[var(--mint)]">
@@ -353,12 +313,12 @@ export function ProjectView(props: ProjectViewProps) {
               ))}
             </div>
           ) : null}
-          <div className="grid grid-cols-[1fr_72px_auto] gap-2">
+          <div className="grid grid-cols-[1fr_68px_auto] gap-2">
             <input
               className="cc-input"
               value={props.steerText}
               maxLength={180}
-              placeholder="Steer next…"
+              placeholder="what next"
               onInput={(event: Event) =>
                 props.onSteerText(
                   (event.currentTarget as HTMLInputElement).value,
@@ -394,6 +354,114 @@ export function ProjectView(props: ProjectViewProps) {
   );
 }
 
+function Roadmap(props: {
+  shipped: ProjectBundle["project"]["milestones"];
+  upcoming: ProjectBundle["project"]["milestones"];
+  done: number;
+  active: boolean;
+  currentVersion?: number;
+  lamportsPerCredit: number;
+  onVersion: (version: number) => void;
+}) {
+  return (
+    <section className="mt-6">
+      {props.upcoming[0] ? (
+        <>
+          <div className="cc-section">
+            <span className="cc-label">NOW</span>
+          </div>
+          <MilestoneRow
+            mile={props.upcoming[0]}
+            index={props.done}
+            current
+            active={props.active}
+            lamportsPerCredit={props.lamportsPerCredit}
+          />
+        </>
+      ) : null}
+      {props.upcoming.length > 1 ? (
+        <>
+          <div className="cc-section">
+            <span className="cc-label">NEXT</span>
+          </div>
+          <div className="grid gap-[5px]">
+            {props.upcoming.slice(1).map((mile, offset) => (
+              <MilestoneRow
+                key={`${mile.title}-${offset}`}
+                mile={mile}
+                index={props.done + offset + 1}
+                lamportsPerCredit={props.lamportsPerCredit}
+              />
+            ))}
+          </div>
+        </>
+      ) : null}
+      {props.shipped.length ? (
+        <>
+          <div className="cc-section">
+            <span className="cc-label">SHIPPED</span>
+          </div>
+          <div className="grid gap-[5px]">
+            {props.shipped
+              .slice()
+              .reverse()
+              .slice(0, 4)
+              .map((mile, reverseIndex) => {
+                const index = props.shipped.length - 1 - reverseIndex;
+                const version = mile.artifactVersion || index + 1;
+                return (
+                  <button
+                    key={`${mile.title}-${index}`}
+                    className={`cc-milestone cc-done ${props.currentVersion === version ? "cc-selected" : ""}`}
+                    onClick={() => props.onVersion(version)}
+                  >
+                    <span className="font-data text-[11px] text-[var(--mint)]">
+                      ✓
+                    </span>
+                    <span className="text-sm leading-[1.35] text-[var(--dim)]">
+                      {mile.title}
+                    </span>
+                    <span className="font-data text-[10px] text-[var(--dimmer)]">
+                      V{version}
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function MilestoneRow({
+  mile,
+  index,
+  current = false,
+  active = false,
+  lamportsPerCredit,
+}: {
+  mile: ProjectBundle["project"]["milestones"][number];
+  index: number;
+  current?: boolean;
+  active?: boolean;
+  lamportsPerCredit: number;
+}) {
+  return (
+    <div className={`cc-milestone ${current ? "cc-next" : "opacity-45"}`}>
+      <span className="font-data text-[11px] text-[var(--dimmer)]">
+        {current && active ? <span className="cc-spinner" /> : index + 1}
+      </span>
+      <span className="text-sm leading-[1.35]">{mile.title}</span>
+      <span
+        className={`font-data whitespace-nowrap text-[10px] ${current ? "text-[var(--claw)]" : "text-[var(--dimmer)]"}`}
+      >
+        {number(creditsToSol(mile.costCredits, lamportsPerCredit), 3)} SOL
+      </span>
+    </div>
+  );
+}
+
 function AgentSurface({
   status,
   note,
@@ -403,26 +471,23 @@ function AgentSurface({
   note: string;
   preview: string;
 }) {
-  const lines =
-    status === "planning"
-      ? []
-      : preview
-          .split(/\r?\n/)
-          .map((line) => line.trim())
-          .filter(Boolean)
-          .slice(-5);
+  const lines = preview
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-6);
   return (
     <div className="cc-agent-surface h-full">
       <div className="cc-agent-grid" aria-hidden="true" />
-      <div className="relative z-10 flex h-full flex-col justify-center px-8 py-6">
-        <div className="flex items-center gap-3">
+      <div className="relative z-10 flex h-full flex-col justify-end px-7 py-6">
+        <div className="mb-auto flex items-center gap-3">
           <span className="cc-spinner" />
-          <span className="font-data text-[10px] tracking-[.16em] text-[var(--claw)]">
+          <span className="font-data text-[10px] uppercase tracking-[.14em] text-[var(--claw)]">
             {note || statusLabel(status)}
           </span>
         </div>
         {lines.length ? (
-          <div className="mt-5 grid gap-2 font-data text-[10px] text-[var(--dimmer)]">
+          <div className="grid gap-1.5 font-data text-[10px] text-[var(--dimmer)]">
             {lines.map((line, index) => (
               <div key={`${line}-${index}`} className="cc-activity-row">
                 <span>{line}</span>
@@ -430,10 +495,10 @@ function AgentSurface({
             ))}
           </div>
         ) : (
-          <div className="mt-6 grid max-w-[440px] gap-2" aria-hidden="true">
-            <span className="cc-agent-bar w-[92%]" />
-            <span className="cc-agent-bar w-[68%]" />
-            <span className="cc-agent-bar w-[80%]" />
+          <div className="grid max-w-[430px] gap-2" aria-hidden="true">
+            <span className="cc-agent-bar w-[88%]" />
+            <span className="cc-agent-bar w-[62%]" />
+            <span className="cc-agent-bar w-[76%]" />
           </div>
         )}
       </div>
@@ -446,15 +511,23 @@ function creditsToSol(credits: number, lamportsPerCredit: number): number {
 }
 
 function statusLabel(status: ProjectStatus): string {
+  if (status === "seeding") return "FUNDING";
   if (status === "waiting_funds") return "WAITING";
+  if (status === "queued") return "STARTING";
   if (status === "working") return "BUILDING";
   if (status === "validating" || status === "publishing") return "SHIPPING";
+  if (status === "completed") return "COMPLETE";
   if (status === "failed") return "STOPPED";
   return status.toUpperCase();
 }
 
 function isActive(status: ProjectStatus): boolean {
-  return ["planning", "queued", "working", "validating", "publishing"].includes(
-    status,
-  );
+  return [
+    "planning",
+    "seeding",
+    "queued",
+    "working",
+    "validating",
+    "publishing",
+  ].includes(status);
 }

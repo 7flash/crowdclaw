@@ -231,7 +231,7 @@ export async function buildNext(
       if (!result) throw new Error("build returned no result");
       usage = result.usage;
       activityText = result.activityText;
-      writeProgress(activityText, result.summary, result.usage, true);
+      writeProgress(activityText, "DONE", result.usage, true);
 
       await measure("db.status.validating", () =>
         projectsRepository.setRunStatus(project.id, run.id, "validating", {

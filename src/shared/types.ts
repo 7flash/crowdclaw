@@ -1,5 +1,6 @@
 export type ProjectStatus =
   | "planning"
+  | "seeding"
   | "waiting_funds"
   | "queued"
   | "working"
@@ -96,6 +97,8 @@ export type ProjectEvent = {
   createdAt: number;
 };
 
+export type DonationSource = "supporter" | "platform_seed";
+
 export type Donation = {
   id: string;
   projectId: string;
@@ -106,6 +109,21 @@ export type Donation = {
   slot: number;
   blockTime: number;
   confirmedAt: number;
+  source: DonationSource;
+};
+
+export type TreasuryGrant = {
+  id: string;
+  projectId: string;
+  purpose: "first_milestone";
+  status: "pending" | "submitted" | "confirmed" | "failed";
+  fromAddress: string;
+  toAddress: string;
+  lamports: number;
+  signature: string;
+  error: string;
+  createdAt: number;
+  updatedAt: number;
 };
 
 export type Supporter = {
@@ -161,6 +179,7 @@ export type ProjectBundle = {
   runs: AgentRun[];
   events: ProjectEvent[];
   donations: Donation[];
+  treasuryGrants: TreasuryGrant[];
   supporters: Supporter[];
   steering: Steering[];
   ledger: CreditLedgerEntry[];

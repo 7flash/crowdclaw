@@ -7,7 +7,7 @@ const noop = () => {};
 export default function Page() {
   const projects = projectsRepository.list();
   return (
-    <main
+    <div
       id="crowdclaw-home"
       data-projects={JSON.stringify(projects)}
       className="min-h-screen bg-[var(--void)] text-[var(--bone)]"
@@ -21,6 +21,6 @@ export default function Page() {
         lamportsPerCredit={lamportsPerCredit()}
         onCreate={noop}
       />
-    </main>
+    </div>
   );
 }

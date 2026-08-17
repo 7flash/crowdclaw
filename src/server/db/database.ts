@@ -19,6 +19,7 @@ const ProjectSchema = z.object({
   summary: z.string(),
   status: z.enum([
     "planning",
+    "seeding",
     "waiting_funds",
     "queued",
     "working",
@@ -102,6 +103,21 @@ const DonationSchema = z.object({
   slot: z.number().int(),
   blockTime: z.number().int(),
   confirmedAt: z.number().int(),
+  source: z.enum(["supporter", "platform_seed"]).default("supporter"),
+});
+
+const TreasuryGrantSchema = z.object({
+  grantId: z.string(),
+  projectId: z.string(),
+  purpose: z.enum(["first_milestone"]),
+  status: z.enum(["pending", "submitted", "confirmed", "failed"]),
+  fromAddress: z.string().default(""),
+  toAddress: z.string(),
+  lamports: z.number().int(),
+  signature: z.string().default(""),
+  error: z.string().default(""),
+  createdAt: z.number().int(),
+  updatedAt: z.number().int(),
 });
 
 const SteeringSchema = z.object({
@@ -165,6 +181,7 @@ export const db = new Database(dbPath, {
   events: EventSchema,
   fundingObservations: FundingObservationSchema,
   donations: DonationSchema,
+  treasuryGrants: TreasuryGrantSchema,
   steering: SteeringSchema,
   steeringChallenges: SteeringChallengeSchema,
   creditLedger: CreditLedgerSchema,

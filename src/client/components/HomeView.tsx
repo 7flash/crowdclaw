@@ -198,6 +198,7 @@ function parsePlan(text: string): {
 }
 
 function shortStatus(status: Project["status"]): string {
+  if (status === "seeding") return "FUNDING";
   if (status === "waiting_funds") return "WAITING";
   if (
     status === "working" ||

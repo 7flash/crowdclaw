@@ -7,6 +7,7 @@ import type {
   Donation,
   Supporter,
   Steering,
+  TreasuryGrant,
   ArtifactSummary,
   Milestone,
   Project,
@@ -125,6 +126,23 @@ function donationFromRow(row: any): Donation {
     slot: Number(row.slot || 0),
     blockTime: Number(row.blockTime || 0),
     confirmedAt: Number(row.confirmedAt || 0),
+    source: row.source === "platform_seed" ? "platform_seed" : "supporter",
+  };
+}
+
+function treasuryGrantFromRow(row: any): TreasuryGrant {
+  return {
+    id: row.grantId,
+    projectId: row.projectId,
+    purpose: "first_milestone",
+    status: row.status,
+    fromAddress: row.fromAddress || "",
+    toAddress: row.toAddress || "",
+    lamports: Number(row.lamports || 0),
+    signature: row.signature || "",
+    error: row.error || "",
+    createdAt: Number(row.createdAt || 0),
+    updatedAt: Number(row.updatedAt || 0),
   };
 }
 
@@ -266,6 +284,7 @@ export const projectsRepository = {
     const runs = allRuns.slice(0, 40);
     const events = this.events(projectId, 40);
     const donations = this.donations(projectId, 40);
+    const treasuryGrants = this.treasuryGrants(projectId);
     const supporters = this.supporters(projectId);
     const steering = this.steering(projectId, 20);
     const ledger = this.ledger(projectId, 40);
@@ -275,6 +294,7 @@ export const projectsRepository = {
       runs,
       events,
       donations,
+      treasuryGrants,
       supporters,
       steering,
       ledger,
@@ -432,8 +452,7 @@ export const projectsRepository = {
       row.done = 0;
       row.reservedCredits = 0;
       row.currentRunId = null;
-      row.agentNote =
-        "Roadmap ready. I’ll start as soon as the first milestone is funded.";
+      row.agentNote = "FUNDING";
       row.streamPreview = "";
       row.error = "";
       row.failureCount = 0;
@@ -443,7 +462,7 @@ export const projectsRepository = {
       row.status =
         next && project.availableCredits >= next.costCredits
           ? "queued"
-          : "waiting_funds";
+          : "seeding";
       row.updatedAt = now();
       run.status = "complete";
       run.finishedAt = now();
@@ -549,11 +568,11 @@ export const projectsRepository = {
       // Funding reconciliation must never advance unrelated lifecycle states.
       // A brand-new planning project intentionally has no milestones yet; treating
       // that as roadmap exhaustion would complete it before the planner can run.
-      if (project.status === "waiting_funds") {
+      if (project.status === "waiting_funds" || project.status === "seeding") {
         const next = project.milestones[project.done];
         if (next && project.availableCredits >= next.costCredits) {
           row.status = "queued";
-          row.agentNote = "Funding reached. Queued for the next milestone.";
+          row.agentNote = "READY";
           row.error = "";
           row.updatedAt = now();
         }
@@ -586,7 +605,7 @@ export const projectsRepository = {
       row.reservedCredits = next.costCredits;
       row.currentRunId = runId;
       row.status = "working";
-      row.agentNote = `Building ${next.title}…`;
+      row.agentNote = "BUILDING";
       row.streamPreview = "";
       row.error = "";
       row.updatedAt = now();
@@ -690,7 +709,7 @@ export const projectsRepository = {
       row.failureCount = 0;
       row.retryAt = 0;
       row.error = "";
-      row.agentNote = `Shipped v${artifact.version}: ${current.title}.`;
+      row.agentNote = `V${artifact.version}`;
 
       const updated = projectFromRow(row);
       const next = updated.milestones[updated.done];
@@ -729,10 +748,7 @@ export const projectsRepository = {
       row.currentRunId = null;
       row.status = status;
       row.error = error.slice(0, 500);
-      row.agentNote =
-        status === "failed"
-          ? "The agent stopped after repeated failed attempts."
-          : "That attempt failed without charging the milestone. I’ll retry automatically.";
+      row.agentNote = status === "failed" ? "STOPPED" : "RETRY";
       row.streamPreview = "";
       row.failureCount = Number(row.failureCount || 0) + 1;
       row.retryAt = retryAt;
@@ -928,6 +944,10 @@ export const projectsRepository = {
         if (exists) continue;
         const confirmedAt =
           transfer.blockTime > 0 ? transfer.blockTime * 1000 : now();
+        const grant = db.treasuryGrants
+          .select()
+          .where({ projectId, signature: transfer.signature })
+          .first() as any | null;
         const row = db.donations.insert({
           donationId: uid("d"),
           projectId,
@@ -938,6 +958,13 @@ export const projectsRepository = {
           slot: Math.floor(transfer.slot || 0),
           blockTime: Math.floor(transfer.blockTime || 0),
           confirmedAt,
+          source:
+            grant &&
+            (!grant.signature ||
+              grant.signature === transfer.signature ||
+              grant.fromAddress === transfer.fromAddress)
+              ? "platform_seed"
+              : "supporter",
         }) as any;
         inserted.push(donationFromRow(row));
       }
@@ -957,7 +984,10 @@ export const projectsRepository = {
 
   supporters(projectId: string): Supporter[] {
     const donations = this.donations(projectId, 2000).filter(
-      (item) => item.fromAddress && item.fromAddress !== "unknown",
+      (item) =>
+        item.source === "supporter" &&
+        item.fromAddress &&
+        item.fromAddress !== "unknown",
     );
     const steerRows = db.steering.select().where({ projectId }).all() as any[];
     const map = new Map<string, Supporter>();
@@ -991,6 +1021,121 @@ export const projectsRepository = {
     return [...map.values()].sort(
       (a, b) => b.donatedLamports - a.donatedLamports,
     );
+  },
+
+  treasuryGrant(projectId: string): TreasuryGrant | null {
+    const row = db.treasuryGrants
+      .select()
+      .where({ projectId, purpose: "first_milestone" })
+      .orderBy("createdAt", "DESC")
+      .first() as any | null;
+    return row ? treasuryGrantFromRow(row) : null;
+  },
+
+  treasuryGrants(projectId: string): TreasuryGrant[] {
+    const rows = db.treasuryGrants
+      .select()
+      .where({ projectId })
+      .orderBy("createdAt", "DESC")
+      .limit(8)
+      .all() as any[];
+    return rows.map(treasuryGrantFromRow);
+  },
+
+  beginTreasuryGrant(input: {
+    projectId: string;
+    toAddress: string;
+    lamports: number;
+  }): TreasuryGrant {
+    let result: TreasuryGrant | null = null;
+    db.transaction(() => {
+      const existing = db.treasuryGrants
+        .select()
+        .where({ projectId: input.projectId, purpose: "first_milestone" })
+        .first() as any | null;
+      if (existing) {
+        if (existing.status === "failed") {
+          existing.status = "pending";
+          existing.error = "";
+          existing.lamports = Math.max(1, Math.floor(input.lamports));
+          existing.updatedAt = now();
+        }
+        result = treasuryGrantFromRow(existing);
+        return;
+      }
+      const createdAt = now();
+      const row = db.treasuryGrants.insert({
+        grantId: `tg_${input.projectId}`,
+        projectId: input.projectId,
+        purpose: "first_milestone",
+        status: "pending",
+        fromAddress: "",
+        toAddress: input.toAddress,
+        lamports: Math.max(1, Math.floor(input.lamports)),
+        signature: "",
+        error: "",
+        createdAt,
+        updatedAt: createdAt,
+      }) as any;
+      result = treasuryGrantFromRow(row);
+    });
+    if (!result) throw new Error("failed to create treasury grant");
+    return result;
+  },
+
+  submitTreasuryGrant(
+    projectId: string,
+    fromAddress: string,
+    signature: string,
+  ): TreasuryGrant {
+    let result: TreasuryGrant | null = null;
+    db.transaction(() => {
+      const row = db.treasuryGrants
+        .select()
+        .where({ projectId, purpose: "first_milestone" })
+        .first() as any | null;
+      if (!row) throw new Error("treasury grant not found");
+      row.status = "submitted";
+      row.fromAddress = fromAddress;
+      row.signature = signature || row.signature || "";
+      row.error = "";
+      row.updatedAt = now();
+      result = treasuryGrantFromRow(row);
+    });
+    if (!result) throw new Error("failed to submit treasury grant");
+    return result;
+  },
+
+  confirmTreasuryGrant(projectId: string): TreasuryGrant | null {
+    let result: TreasuryGrant | null = null;
+    db.transaction(() => {
+      const row = db.treasuryGrants
+        .select()
+        .where({ projectId, purpose: "first_milestone" })
+        .first() as any | null;
+      if (!row) return;
+      row.status = "confirmed";
+      row.error = "";
+      row.updatedAt = now();
+      result = treasuryGrantFromRow(row);
+    });
+    return result;
+  },
+
+  failTreasuryGrant(projectId: string, error: string): TreasuryGrant | null {
+    let result: TreasuryGrant | null = null;
+    db.transaction(() => {
+      const row = db.treasuryGrants
+        .select()
+        .where({ projectId, purpose: "first_milestone" })
+        .first() as any | null;
+      if (!row) return;
+      row.status = "failed";
+      row.error = error.slice(0, 300);
+      row.updatedAt = now();
+      result = treasuryGrantFromRow(row);
+    });
+    return result;
   },
 
   steering(projectId: string, limit = 20): Steering[] {

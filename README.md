@@ -1,176 +1,151 @@
 # CrowdClaw
 
-Crowd-funded autonomous browser games.
-
 **Describe your Idea. Agent keeps building it.**
 
-Anyone can fund a project with SOL. Confirmed supporters earn influence proportional to their contribution and can spend that influence to steer future rolling milestones.
+Anyone can fund it. Supporters steer what it builds next.
+
+## Flow
+
+```text
+idea
+  ↓
+project wallet
+  ↓
+bgrun project agent
+  ↓
+3 milestones
+  ↓
+CrowdClaw → first milestone SOL
+  ↓
+building
+  ↓
+playable v1
+  ↓
+community funding + steering
+  ↓
+rolling releases
+```
+
+Every project gets its own Solard wallet and its own bgrun-managed agent process. The platform automatically sponsors the first milestone from the configured CrowdClaw treasury so a new project starts building immediately instead of opening on an empty funding screen.
+
+The seed transfer is persisted before it is sent, shown live as `CrowdClaw` in Supporters, and does **not** earn steering influence. Human SOL contributions do.
 
 ## Stack
 
 - Bun
-- TradJS 4.3.0 — real multi-page routing
-- `jsx-ai` — planner + file-tool agent loops
-- `gemini-3-flash-preview` by default
-- `@solard/sdk@0.2.3` — one funding wallet per project
-- `bgrun@3.12.16` — one observable OS process per project agent
-- `sqlite-zod-orm` — projects, runs, artifacts, funding, supporters, steering
-- `measure-fn` — closure-nested traces
+- TradJS `4.3.0`
+- `jsx-ai`
+- `gemini-3-flash-preview`
+- `@solard/sdk@0.2.3`
+- `bgrun@3.12.16`
+- `sqlite-zod-orm`
+- `measure-fn`
 - Tailwind 4
 
-## Process model
+## Processes
 
-TradJS only serves the product. It does not contain an embedded agent loop.
+TradJS is the web app. It does not run an embedded worker loop.
 
-When a project is created, the server starts a dedicated bgrun process:
+Creating a project calls the bgrun SDK and starts one process:
 
 ```text
 crowdclaw-agent-p_xxx
   └─ bun project-agent.ts p_xxx
 ```
 
-That process owns only that project:
-
-```text
-planning
-  ↓
-waiting_funds
-  ↓
-working
-  ↓
-validating
-  ↓
-publishing
-  ↓
-waiting_funds / working / ...
-```
-
-The web server uses the bgrun SDK (`handleRun`, `getProcess`, `isProcessRunning`) to create and reconcile project-agent processes. bgrun owns process logs/PIDs/runtime; CrowdClaw SQLite owns project state.
-
-Open bgrun's dashboard for agent observability:
+That process owns only that project. SQLite is the queue/state boundary; bgrun owns PID/runtime/log observability.
 
 ```sh
 bun run bgrun
 ```
 
-## Pages
+opens bgrun observability.
+
+## First milestone sponsorship
+
+After planning, a fresh project enters `seeding`.
+
+The project agent asks the treasury service for only the shortfall required to fund milestone 1:
 
 ```text
-/
-  create idea
-  streamed planner output
-  name / summary / 3 milestones appear as Gemini emits them
-  normal browser navigation
-
-/projects/:id
-  playable release
-  live agent state
-  SOL funding
-  rolling roadmap
-  supporters
-  steering
+required = first milestone cost
+shortfall = required - already confirmed project funding
 ```
 
-TradJS 4.3 uses real document navigation. Refreshing or sharing `/projects/:id` loads the project directly from SQLite.
+The treasury service resolves `TREASURY_WALLET_NAME` through `@solard/sdk` and sends SOL to the project wallet.
 
-## Agent planning
+```ts
+slrd
+  .tx(treasury.address)
+  .transferSol(project.walletAddress, sol(amount))
+  .send()
+```
 
-Initial planning streams line-by-line so Home can show the roadmap as it is generated.
+A deterministic first-milestone grant record prevents normal retries from creating multiple grants. Submitted grants are reconciled against the project wallet before another attempt is allowed.
 
-The planner contract remains:
+The project page receives the grant and wallet balance over SSE, so the sequence is visible without a reload:
 
 ```text
-N|kebab-case-name
-S|one sentence
-M|first milestone|2
-M|second milestone|2
-M|third milestone|3
+FUNDING
+CrowdClaw  +0.0200 SOL
+0.0000 SOL → 0.0200 SOL
+STARTING
+BUILDING
+READ / WRITE / VALIDATE / PUBLISH
+v1 appears playable
 ```
 
-Costs are internal integer build units. Public UI converts them to SOL using `LAMPORTS_PER_CREDIT` and never exposes the old credit symbol.
+## Public agent activity
 
-## Game-building loop
+`jsx-ai` has an explicit `status` tool for short public updates. These are operational summaries, not hidden chain-of-thought.
 
-Each project agent uses `jsx-ai` with real project-file tools:
+Examples:
+
+```text
+Tuning shrinking wall timing
+READ index.html
+WRITE index.html
+Testing collision rules
+VALIDATE
+PUBLISH
+```
+
+File tools remain:
 
 ```text
 list_files
 read_file
 write_file
+status
 phase_done
 ```
 
-The workspace persists under `WORKSPACE_ROOT/<projectId>`.
+`phase_done` is only a publication request. CrowdClaw independently validates `index.html` before charging the milestone and publishing the immutable release.
 
-`phase_done` is only a request to publish. CrowdClaw validates `index.html` independently before the milestone is charged and released.
+## Supporters and steering
 
-Every successful release proposes one new rolling milestone.
+The platform seed is displayed as CrowdClaw but earns zero influence.
 
-## Supporters and influence
+Confirmed human donations earn influence proportional to attributed SOL. Supporters can spend that influence on signed steering instructions for future work. Open steering is passed into the next `jsx-ai` build weighted by influence.
 
-Confirmed inbound SOL transactions are indexed by paying address.
-
-For each supporter:
+## Pages
 
 ```text
-influence earned = attributed donation build units
-influence available = earned - spent
+/
+  idea
+  streamed planning animation
+  normal navigation
+
+/projects/:id
+  live build / playable artifact
+  agent
+  treasury
+  now / next / shipped
+  supporters
+  steer next
 ```
 
-A supporter can connect an injected Solana wallet, sign a short CrowdClaw challenge, and spend influence on a steering instruction.
-
-Open steering is passed to the agent when it builds the current milestone:
-
-```text
-SUPPORTER STEERING
-- 3.00 influence: add risky speed upgrades
-- 1.25 influence: make walls pulse before moving
-```
-
-Higher influence is stronger direction. Compatible steering can shape the pending implementation and the new rolling milestone. Steering captured by a run is consumed atomically when that run publishes. Steering submitted while a build is already running remains open for the following milestone.
-
-## Funding
-
-Each project gets a Solard wallet at creation.
-
-Wallet balance is the authority for build funding. Transaction indexing is only used for supporter attribution, so the same transfer cannot mint funding twice.
-
-Default conversion:
-
-```text
-LAMPORTS_PER_CREDIT=10000000
-1 internal build unit = 0.01 SOL
-```
-
-The public product displays `SOL`, not internal build units.
-
-## Development
-
-```sh
-cp .env.example .env
-# set GEMINI_API_KEY
-bun install
-bun run dev
-```
-
-Create a project in the browser. The server will start a process named like:
-
-```text
-crowdclaw-agent-p_m...
-```
-
-Inspect it with:
-
-```sh
-bunx bgrun
-bunx bgrun crowdclaw-agent-p_m... --logs
-```
-
-Or open the dashboard:
-
-```sh
-bun run bgrun
-```
+TradJS 4.3 uses real document navigation. Direct links and refreshes load `/projects/:id` from SQLite, then SSE keeps the page current.
 
 ## Environment
 
@@ -185,19 +160,42 @@ AGENT_REQUEST_TIMEOUT_MS=90000
 DATABASE_PATH=./data/crowdclaw.sqlite
 WORKSPACE_ROOT=./data/workspaces
 PORT=3000
-BGR_GROUP=crowdclaw
 
 AGENT_POLL_MS=2000
 AGENT_LEASE_MS=60000
 AGENT_SUPERVISOR_MS=15000
-FUNDING_SYNC_MS=15000
+FUNDING_SYNC_MS=5000
 
 SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 SOLANA_RPC_TIMEOUT_MS=12000
 LAMPORTS_PER_CREDIT=10000000
+
+SLRD_MASTER_KEY=change-me
+TREASURY_SEED_ENABLED=1
+TREASURY_WALLET_NAME=crowdclaw-main
+TREASURY_AUTO_CREATE=1
+TREASURY_RETRY_MS=15000
+
+ALLOW_DEV_FUNDING=0
 ```
 
-## Verification
+With `TREASURY_AUTO_CREATE=1`, CrowdClaw creates the named Solard treasury if it does not already exist. Fund that wallet with SOL before creating public projects.
+
+## Run
+
+```sh
+cp .env.example .env
+bun install
+bun run dev
+```
+
+Then:
+
+```sh
+bun run bgrun
+```
+
+## Verify
 
 ```sh
 bun run verify
@@ -210,5 +208,3 @@ Health:
 /api/health/live
 /api/health/ready
 ```
-
-Readiness checks configuration, SQLite, and the bgrun programmatic API. Agent process state/logs remain available through bgrun itself.
