@@ -54,13 +54,61 @@ export default function mount() {
   const scheduleOpen = () => {
     if (openTimer) return;
     openTimer = setTimeout(() => {
-      openTimer = null;
-      (
-        document.getElementById(
-          "crowdclaw-created-project-link",
-        ) as HTMLAnchorElement | null
-      )?.click();
-    }, 260);
+      const link = document.getElementById(
+        "crowdclaw-created-project-link",
+      ) as HTMLAnchorElement | null;
+      if (!link) {
+        openTimer = null;
+        return;
+      }
+
+      // Make the document handoff deterministic with WAAPI instead of relying
+      // on cross-document transition support or remount-sensitive CSS classes.
+      root.classList.add("cc-home-handoff-out");
+      const shell = root.querySelector(".cc-plan-shell");
+      shell?.animate(
+        [
+          {
+            opacity: 1,
+            transform: "translateY(0) scale(1)",
+            filter: "blur(0)",
+          },
+          {
+            opacity: 0,
+            transform: "translateY(-28px) scale(.975)",
+            filter: "blur(6px)",
+          },
+        ],
+        { duration: 700, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" },
+      );
+      const curtain = document.createElement("div");
+      curtain.className = "cc-handoff-curtain";
+      curtain.innerHTML = '<i class="cc-handoff-line"></i>';
+      document.body.appendChild(curtain);
+      curtain.animate([{ opacity: 0 }, { opacity: 1 }], {
+        duration: 520,
+        easing: "ease-out",
+        fill: "forwards",
+      });
+      curtain
+        .querySelector("i")
+        ?.animate([{ transform: "scaleX(.02)" }, { transform: "scaleX(1)" }], {
+          duration: 650,
+          easing: "cubic-bezier(.16,.84,.28,1)",
+          fill: "forwards",
+        });
+      try {
+        sessionStorage.setItem(
+          `crowdclaw:handoff:${state.planningProject?.id || ""}`,
+          "1",
+        );
+      } catch {}
+
+      openTimer = setTimeout(() => {
+        openTimer = null;
+        window.location.assign(link.href);
+      }, 700);
+    }, 1200);
   };
 
   const applyPlanningBundle = (bundle: ProjectBundle) => {

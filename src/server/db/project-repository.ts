@@ -460,7 +460,8 @@ export const projectsRepository = {
       row.reservedCredits = 0;
       row.currentRunId = null;
       row.agentNote = "FUNDING";
-      row.streamPreview = "";
+      // Keep the planning preview until the next live agent/build update so the
+      // project-page handoff can show the planner's explicit public note.
       row.error = "";
       row.failureCount = 0;
       row.retryAt = 0;
@@ -592,6 +593,9 @@ export const projectsRepository = {
           row.status = "queued";
           row.agentNote = "READY";
           row.error = "";
+          // Funding is an external wake-up signal. Once the next milestone is
+          // funded, any treasury/model retry delay must not hold the build back.
+          row.retryAt = 0;
           row.updatedAt = now();
         }
       }

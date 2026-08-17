@@ -15,4 +15,14 @@ describe("platform supporter truthfulness", () => {
   test("hides failed treasury grants from supporters", () => {
     expect(source).toContain('seed && seed.status !== "failed"');
   });
+
+  test("does not turn treasury failure into public ERROR", () => {
+    expect(source).toContain(
+      'event.type === "treasury.seed.failed") return ""',
+    );
+  });
+
+  test("keeps the planner public note in the cinematic activity feed", () => {
+    expect(source).toContain('clean.startsWith("T|")');
+  });
 });

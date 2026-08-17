@@ -13,8 +13,12 @@ describe("bgrun health", () => {
     expect(source).not.toContain("getAllProcesses()");
   });
 
-  test("recovers only old terminal planning failures caused by transient provider outages", () => {
+  test("recovers transient provider failures and the legacy one-step plan-contract failure", () => {
     expect(source).toContain("isTransientProviderError(project.error)");
     expect(source).toContain('agentNote: "BUSY"');
+    expect(source).toContain(
+      "Planning stopped with max_steps without a valid plan",
+    );
+    expect(source).toContain('agentNote: "THINKING"');
   });
 });

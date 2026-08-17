@@ -17,6 +17,7 @@ export type ProjectViewProps = {
   selectedVersion: number | null;
   artifactCode: string | null;
   artifactCodeVersion: number | null;
+  previewRevision: number;
   steerText: string;
   steerAmount: string;
   steering: boolean;
@@ -53,7 +54,15 @@ export function ProjectView(props: ProjectViewProps) {
   const next = project.milestones[project.done];
   const shipped = project.milestones.slice(0, project.done);
   const upcoming = project.milestones.slice(project.done, project.done + 4);
-  const active = isActive(project.status);
+  const buildActive = [
+    "queued",
+    "working",
+    "validating",
+    "publishing",
+  ].includes(project.status);
+  const fundingActive =
+    project.status === "seeding" || project.status === "waiting_funds";
+  const active = project.status === "planning" || fundingActive || buildActive;
   const totalTokens = currentRun
     ? currentRun.inputTokens +
       currentRun.outputTokens +
@@ -68,34 +77,32 @@ export function ProjectView(props: ProjectViewProps) {
   const nextSol = next ? creditsToSol(next.costCredits, lamportsPerCredit) : 0;
   const seed = treasuryGrants[0];
   const visibleSeed = seed && seed.status !== "failed" ? seed : undefined;
-  const seedLamports =
-    seed?.lamports ||
-    (next ? Math.max(1, Math.ceil(next.costCredits * lamportsPerCredit)) : 0);
   const openSteering = steering
     .filter((item) => item.status === "open")
     .sort((a, b) => b.influence - a.influence);
-  const liveLines = activityLines(
+  const buildLines = buildActivityLines(
     project.streamPreview,
     events,
-    visibleSeed,
     artifacts.length,
+    project.status,
   );
-  const stageHeight = currentArtifact
-    ? "h-[472px] max-[800px]:h-[340px]"
-    : active
-      ? "h-[300px] max-[800px]:h-[250px]"
-      : "h-[132px]";
+  const showLiveWorkspace = props.selectedVersion == null && buildActive;
+  const playUrl =
+    showLiveWorkspace || !currentArtifact
+      ? `/api/projects/${encodeURIComponent(project.id)}/preview?rev=${encodeURIComponent(String(props.previewRevision))}`
+      : `/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}`;
+  const stageHeight = "h-[500px] max-[800px]:h-[360px]";
   const hasCommunity = Boolean(
     visibleSeed || supporters.length || openSteering.length,
   );
 
   return (
     <main className="mx-auto max-w-[920px] px-5 pb-[72px]">
-      <header className="cc-project-transition flex items-center gap-3 py-4">
+      <header className="flex items-center gap-3 py-4">
         <a className="cc-icon-link" href="/" aria-label="Back">
           ←
         </a>
-        <h1 className="font-display m-0 min-w-0 flex-1 truncate text-[clamp(1.8rem,4vw,2.45rem)] font-extrabold uppercase leading-[.9] tracking-[-.015em]">
+        <h1 className="cc-project-title font-display m-0 min-w-0 flex-1 truncate text-[clamp(2rem,5vw,3rem)] font-extrabold uppercase leading-[.9] tracking-[-.015em]">
           {project.name}
         </h1>
         <button className="cc-btn" onClick={props.onShare}>
@@ -103,7 +110,7 @@ export function ProjectView(props: ProjectViewProps) {
         </button>
       </header>
 
-      <section className="cc-stage">
+      <section className="cc-stage cc-stage-appear">
         <div className="cc-stage-bar">
           <span
             className={`cc-dot ${active ? "cc-dot-go" : artifacts.length ? "cc-dot-on" : ""}`}
@@ -115,12 +122,22 @@ export function ProjectView(props: ProjectViewProps) {
             className={`ml-1 h-1.5 w-1.5 rounded-full ${props.liveState === "live" ? "bg-[var(--mint)]" : "bg-[var(--dimmer)]"}`}
             aria-label={props.liveState}
           />
-          {active ? <span className="cc-stage-runner" /> : null}
-          <div className="ml-auto flex items-center gap-0.5">
-            {currentArtifact ? (
+          {buildActive ? (
+            <>
+              <span className="cc-stage-runner" />
+              <span
+                data-run-clock
+                className="ml-auto mr-2 font-data text-[9px] text-[var(--dimmer)]"
+              />
+            </>
+          ) : (
+            <span className="ml-auto" />
+          )}
+          <div className="flex items-center gap-0.5">
+            {currentArtifact && !showLiveWorkspace ? (
               <span className="cc-label mr-2">V{currentArtifact.version}</span>
             ) : null}
-            {currentArtifact ? (
+            {currentArtifact && !showLiveWorkspace ? (
               <>
                 <button
                   className={`cc-tab ${props.tab === "play" ? "cc-tab-on" : ""}`}
@@ -149,55 +166,58 @@ export function ProjectView(props: ProjectViewProps) {
             ) : null}
           </div>
         </div>
-        <div className={`relative ${stageHeight}`}>
-          {currentArtifact ? (
-            props.tab === "play" ? (
-              <iframe
-                key={currentArtifact.version}
-                className="cc-artifact-reveal block h-full w-full border-0 bg-black"
-                src={`/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}`}
-                sandbox="allow-scripts allow-pointer-lock"
-                title={`${project.name} v${currentArtifact.version}`}
-              />
-            ) : (
-              <pre className="cc-code">
-                {props.artifactCodeVersion === currentArtifact.version &&
-                props.artifactCode != null
-                  ? props.artifactCode
-                  : "…"}
-              </pre>
-            )
-          ) : project.status === "seeding" ? (
-            <SeedSurface
-              seed={seed}
-              lamports={seedLamports}
-              balanceLamports={project.onchainLamports}
-              activity={liveLines}
-            />
-          ) : active ? (
-            <AgentSurface
-              status={project.status}
-              note={project.agentNote}
-              lines={liveLines}
-            />
+        <div className={`cc-stage-body relative ${stageHeight}`}>
+          {props.tab === "code" && currentArtifact && !showLiveWorkspace ? (
+            <pre className="cc-code">
+              {props.artifactCodeVersion === currentArtifact.version &&
+              props.artifactCode != null
+                ? props.artifactCode
+                : "…"}
+            </pre>
           ) : (
-            <IdleSurface status={project.status} lines={liveLines} />
+            <>
+              <iframe
+                className="cc-preview-frame block h-full w-full border-0 bg-black"
+                src={playUrl}
+                sandbox="allow-scripts allow-pointer-lock"
+                title={`${project.name} browser`}
+              />
+              {project.status === "failed" ? (
+                <div className="cc-browser-overlay">
+                  <ActivityFeed
+                    lines={[
+                      publicErrorLabel(project.error || project.agentNote),
+                    ]}
+                  />
+                </div>
+              ) : buildActive ? (
+                <div className="cc-browser-overlay">
+                  <div className="cc-coding-live">
+                    <span>{project.agentNote || "CODING"}</span>
+                    <span data-run-clock />
+                  </div>
+                  <ActivityFeed
+                    lines={
+                      buildLines.length
+                        ? buildLines
+                        : [project.agentNote || "CODING"]
+                    }
+                  />
+                </div>
+              ) : null}
+            </>
           )}
         </div>
       </section>
 
-      <LiveRail
+      <LiveStrip
         agentId={project.agentId}
         totalTokens={totalTokens}
         contextWindow={contextWindow}
         walletAddress={project.walletAddress}
         solBalance={solBalance}
-        availableSol={availableSol}
-        nextSol={nextSol}
-        hasNext={Boolean(next)}
-        refreshing={props.refreshing}
+        liveState={props.liveState}
         onCopyWallet={props.onCopyWallet}
-        onSyncFunding={props.onSyncFunding}
         onDevFund={props.bundle.devFundingEnabled ? props.onDevFund : undefined}
       />
 
@@ -205,7 +225,7 @@ export function ProjectView(props: ProjectViewProps) {
         shipped={shipped}
         upcoming={upcoming}
         done={project.done}
-        active={active}
+        active={buildActive}
         currentVersion={currentArtifact?.version}
         lamportsPerCredit={lamportsPerCredit}
         onVersion={props.onVersion}
@@ -228,33 +248,25 @@ export function ProjectView(props: ProjectViewProps) {
   );
 }
 
-function LiveRail(props: {
+function LiveStrip(props: {
   agentId: string;
   totalTokens: number;
   contextWindow: number;
   walletAddress: string;
   solBalance: number;
-  availableSol: number;
-  nextSol: number;
-  hasNext: boolean;
-  refreshing: boolean;
+  liveState: "connecting" | "live" | "fallback";
   onCopyWallet: () => void;
-  onSyncFunding: () => void;
   onDevFund?: () => void;
 }) {
   const tokenPercent = Math.min(
     100,
     props.contextWindow ? (props.totalTokens / props.contextWindow) * 100 : 0,
   );
-  const fundPercent = Math.min(
-    100,
-    props.nextSol ? (props.availableSol / props.nextSol) * 100 : 0,
-  );
   return (
-    <div className="cc-live-rail">
-      <div className="cc-live-cell">
-        <span className="cc-label">AGENT</span>
-        <span className="font-data text-[9px] text-[var(--mint)]">
+    <div className="cc-live-strip">
+      <span className="cc-label">AGENT</span>
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="truncate font-data text-[9px] text-[var(--mint)]">
           {props.agentId}
         </span>
         <span className="cc-rail-meter">
@@ -264,40 +276,17 @@ function LiveRail(props: {
           {tokens(props.totalTokens)}
         </span>
       </div>
-      <div className="cc-live-cell">
-        <span className="cc-label">SOL</span>
-        <button
-          className="min-w-0 truncate border-0 bg-transparent p-0 text-left font-data text-[9px] text-[var(--dimmer)]"
-          onClick={props.onCopyWallet}
-          title={props.walletAddress}
-        >
-          {shortAddress(props.walletAddress)}
-        </button>
+      <button
+        className="cc-live-wallet truncate border-0 bg-transparent p-0 font-data text-[9px] text-[var(--dimmer)]"
+        onClick={props.onCopyWallet}
+        title={props.walletAddress}
+      >
+        {number(props.solBalance, 4)} SOL · {shortAddress(props.walletAddress)}
+      </button>
+      <div className="flex items-center gap-2">
         <span
-          key={props.solBalance}
-          className="cc-balance-pop font-data text-[13px] text-[var(--bone)]"
-        >
-          {number(props.solBalance, 4)}
-        </span>
-        <button className="cc-mini" onClick={props.onSyncFunding}>
-          {props.refreshing ? "…" : "↻"}
-        </button>
-        {props.hasNext ? (
-          <span className="cc-rail-meter">
-            <i style={{ width: `${fundPercent}%` }} />
-          </span>
-        ) : null}
-        {props.hasNext ? (
-          <span className="font-data text-[9px] text-[var(--dimmer)]">
-            {number(props.availableSol, 3)}/{number(props.nextSol, 3)}
-          </span>
-        ) : null}
-        <button
-          className="cc-mini text-[var(--claw)]"
-          onClick={props.onCopyWallet}
-        >
-          FUND
-        </button>
+          className={`h-1.5 w-1.5 rounded-full ${props.liveState === "live" ? "bg-[var(--mint)]" : "bg-[var(--dimmer)]"}`}
+        />
         {props.onDevFund ? (
           <button className="cc-mini" onClick={props.onDevFund}>
             DEV
@@ -521,63 +510,8 @@ function MilestoneRow({
       <span
         className={`font-data whitespace-nowrap text-[10px] ${current ? "text-[var(--claw)]" : "text-[var(--dimmer)]"}`}
       >
-        {number(creditsToSol(mile.costCredits, lamportsPerCredit), 3)} SOL
+        {number(creditsToSol(mile.costCredits, lamportsPerCredit), 4)} SOL
       </span>
-    </div>
-  );
-}
-
-function SeedSurface({
-  seed,
-  lamports,
-  balanceLamports,
-  activity,
-}: {
-  seed: ProjectBundle["treasuryGrants"][number] | undefined;
-  lamports: number;
-  balanceLamports: number;
-  activity: string[];
-}) {
-  const confirmed =
-    seed?.status === "confirmed" ||
-    (lamports > 0 && balanceLamports >= lamports);
-  const submitted = seed?.status === "submitted" || confirmed;
-  return (
-    <div className="cc-seed-surface h-full">
-      <div className="cc-seed-glow" aria-hidden="true" />
-      <div className="relative z-10 flex h-full flex-col justify-center px-7">
-        <div className="mx-auto w-full max-w-[620px]">
-          <div className="grid grid-cols-[auto_1fr_auto] items-center gap-4">
-            <span className="font-data text-[10px] uppercase tracking-[.12em] text-[var(--bone)]">
-              CrowdClaw
-            </span>
-            <span className="cc-seed-track">
-              <i
-                className={
-                  submitted
-                    ? "cc-seed-packet cc-seed-packet-sent"
-                    : "cc-seed-packet"
-                }
-              />
-            </span>
-            <span
-              key={`${seed?.status || "new"}-${lamports}`}
-              className="font-data text-[15px] text-[var(--mint)]"
-            >
-              +{number(lamports / SOL_LAMPORTS, 4)} SOL
-            </span>
-          </div>
-          <div className="mt-4">
-            <ActivityFeed
-              lines={
-                activity.length
-                  ? activity
-                  : [submitted ? "CONFIRMING" : "SIGNING"]
-              }
-            />
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
@@ -610,30 +544,25 @@ function AgentSurface({
   );
 }
 
-function IdleSurface({
-  status,
-  lines,
-}: {
-  status: ProjectStatus;
-  lines: string[];
-}) {
+function IdleSurface({ lines }: { lines: string[] }) {
   return (
     <div className="flex h-full items-center px-7">
       <div className="w-full">
-        <ActivityFeed lines={lines.length ? lines : [statusLabel(status)]} />
+        <ActivityFeed lines={lines} />
       </div>
     </div>
   );
 }
 
 function ActivityFeed({ lines }: { lines: string[] }) {
+  const visible = lines.slice(-5);
   return (
     <div className="cc-cinema-feed">
-      {lines.slice(-6).map((line, index) => (
+      {visible.map((line, index) => (
         <div
           key={`${line}-${index}`}
           className={
-            index === Math.min(lines.length, 6) - 1
+            index === visible.length - 1
               ? "cc-cinema-line cc-cinema-current"
               : "cc-cinema-line"
           }
@@ -645,31 +574,23 @@ function ActivityFeed({ lines }: { lines: string[] }) {
   );
 }
 
-function activityLines(
+function buildActivityLines(
   preview: string,
   events: ProjectEvent[],
-  seed: ProjectBundle["treasuryGrants"][number] | undefined,
   artifactCount: number,
+  status: ProjectStatus,
 ): string[] {
   const lines: string[] = [];
-  for (const event of [...events].reverse()) {
-    const label = eventLabel(event);
-    if (label) lines.push(label);
-  }
-  if (seed && seed.status !== "failed") {
-    const amount = number(seed.lamports / SOL_LAMPORTS, 4);
-    const state =
-      seed.status === "confirmed"
-        ? "✓"
-        : seed.status === "submitted"
-          ? "…"
-          : "→";
-    lines.push(`${state} ${amount} SOL`);
-  }
-  for (const line of preview.split(/\r?\n/)) {
-    const clean = line.trim();
-    if (!clean || /^[TSNM]\|/.test(clean)) continue;
-    lines.push(clean.replace(/^>\s*/, ""));
+  if (["queued", "working", "validating", "publishing"].includes(status)) {
+    for (const event of [...events].reverse()) {
+      const label = eventLabel(event);
+      if (label) lines.push(label);
+    }
+    for (const line of preview.split(/\r?\n/)) {
+      const clean = line.trim();
+      if (!clean || /^[TSNM]\|/.test(clean)) continue;
+      lines.push(clean.replace(/^>\s*/, ""));
+    }
   }
   if (artifactCount && !lines.some((line) => /^V\d+\s+LIVE$/.test(line)))
     lines.push(`V${artifactCount} LIVE`);
@@ -677,25 +598,15 @@ function activityLines(
 }
 
 function eventLabel(event: ProjectEvent): string {
-  if (event.type === "wallet.created") return "WALLET";
-  if (event.type === "agent.assigned") return "AGENT";
-  if (event.type === "roadmap.planned") return "ROADMAP";
-  if (event.type === "treasury.seed.sent") return "SOL SENT";
-  if (event.type === "funding.confirmed") return "SOL ✓";
   if (event.type === "milestone.started") return "BUILD";
   if (event.type === "artifact.published") {
     const match = event.message.match(/v(\d+)/i);
     return match ? `V${match[1]} LIVE` : "LIVE";
   }
   if (event.type === "roadmap.rolled") return "NEXT +1";
+  if (event.type === "agent.activity") return event.message.slice(0, 100);
   if (event.type === "agent.busy") return "BUSY";
   if (event.type === "agent.retry") return "RETRY";
-  if (
-    event.type === "agent.failed" ||
-    event.type === "agent.process.failed" ||
-    event.type === "treasury.seed.failed"
-  )
-    return "ERROR";
   return "";
 }
 
@@ -721,15 +632,4 @@ function statusLabel(status: ProjectStatus, error = ""): string {
   if (status === "validating" || status === "publishing") return "SHIPPING";
   if (status === "completed") return "COMPLETE";
   return status.toUpperCase();
-}
-
-function isActive(status: ProjectStatus): boolean {
-  return [
-    "planning",
-    "seeding",
-    "queued",
-    "working",
-    "validating",
-    "publishing",
-  ].includes(status);
 }

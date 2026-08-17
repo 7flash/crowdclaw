@@ -1,10 +1,6 @@
 import { Solard, sol } from "@solard/sdk";
 import { measure } from "measure-fn";
-import {
-  solanaRpcUrl,
-  treasuryAutoCreate,
-  treasuryWalletName,
-} from "../config";
+import { solanaRpcUrl, treasuryWalletName } from "../config";
 
 let instance: Solard | null = null;
 
@@ -70,22 +66,7 @@ export async function getTreasuryWallet(): Promise<TreasuryWallet> {
           address: String(existing.address),
         };
       }
-      if (!treasuryAutoCreate())
-        throw new Error(`Solard treasury wallet not found: ${wanted}`);
-      const created = (await measure(
-        {
-          start: () => "Solard create treasury",
-          end: (value: any) => ({ address: String(value?.address || "") }),
-          wallet: wanted,
-        },
-        () => sdk().createWallet(wanted),
-      )) as any;
-      if (!created?.address)
-        throw new Error("Solard did not return a treasury wallet address");
-      return {
-        name: String(created.name || wanted),
-        address: String(created.address),
-      };
+      throw new Error(`Solard treasury wallet not found: ${wanted}`);
     },
   );
 }

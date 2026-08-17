@@ -140,11 +140,29 @@ export async function ensureProjectAgent(
           name,
           command,
           directory: PROJECT_ROOT,
-          force: Boolean(existing),
+          // Project agents never listen on a TCP port. `force` is intentionally
+          // disabled: bgrun force-restart performs orphan-port cleanup from the
+          // previous process record. A stale worker record can otherwise carry
+          // the web server port and kill TradJS while merely restarting an
+          // agent. We already return above when the existing PID is alive, so a
+          // stopped record can be started safely without destructive cleanup.
+          force: false,
           remoteName: "",
         });
         return { ok: true };
       } catch (error) {
+        // A create request and the supervisor can race. If another caller won
+        // and the named worker is alive now, treat this start as successful
+        // rather than turning a harmless name collision into an agent failure.
+        const raced = getProcess(name);
+        if (
+          raced &&
+          Number(raced.pid || 0) > 0 &&
+          (await isProcessRunning(raced.pid))
+        ) {
+          return { ok: true };
+        }
+
         // bgrun includes stderr tails in the thrown message. Keep that detail in
         // bgrun's own log files and collapse the web-process trace to one label.
         const current = projectsRepository.get(projectId);
@@ -243,6 +261,29 @@ export async function reconcileProjectAgents(): Promise<void> {
         retryAt: Date.now() + 1_000,
       });
       projectsRepository.event(project.id, "agent.recovered", "MODEL BUSY");
+    }
+
+    // 4.16.1 could reject a one-step plan for cosmetic schema details after the
+    // model had already called submit_game_plan. Re-run only that old generic
+    // host-contract failure; new validation failures retain their specific error.
+    for (const project of projectsRepository.list()) {
+      if (
+        project.status !== "failed" ||
+        project.milestones.length ||
+        !/Planning stopped with max_steps without a valid plan\.?/i.test(
+          project.error,
+        )
+      )
+        continue;
+      projectsRepository.setStatus(project.id, "planning", {
+        currentRunId: null,
+        agentNote: "THINKING",
+        streamPreview: "",
+        error: "",
+        failureCount: 0,
+        retryAt: Date.now() + 500,
+      });
+      projectsRepository.event(project.id, "agent.recovered", "PLAN RETRY");
     }
 
     const active = projectsRepository

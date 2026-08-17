@@ -13,9 +13,8 @@ describe("planning agent", () => {
     expect(agent).not.toContain("streamLLM(");
     expect(tick).not.toContain("startPlanningPulse");
     expect(tick).toContain("revealPlanningResult(");
-    expect(tick).toContain(
-      'publicMessage = /(?:\\b429\\b|quota|rate.?limit)/i.test(message) ? "QUOTA" : "MODEL ERROR"',
-    );
+    expect(agent).toContain("normalizePlan(call.args, idea)");
+    expect(agent).toContain("Planning rejected:");
   });
 
   test("build agent delegates history/tool iteration to runAgent", () => {

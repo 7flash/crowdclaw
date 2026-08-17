@@ -5,7 +5,9 @@ import {
   treasurySeedEnabled,
 } from "../config";
 import { projectsRepository } from "../db/project-repository";
-import { sendTreasurySol } from "../wallets/solard";
+import { getTreasuryWallet, sendTreasurySol } from "../wallets/solard";
+import { getBalanceLamports } from "../wallets/solana-rpc";
+import { log } from "../log";
 import type { Project, TreasuryGrant } from "../../shared/types";
 
 export async function ensureFirstMilestoneSeed(
@@ -19,7 +21,7 @@ export async function ensureFirstMilestoneSeed(
     {
       start: () => "Ensure first seed",
       end: (grant: TreasuryGrant | null) => ({
-        status: grant?.status || "none",
+        status: grant?.status || "unavailable",
         lamports: grant?.lamports || 0,
         signature: grant?.signature || "",
       }),
@@ -55,9 +57,55 @@ export async function ensureFirstMilestoneSeed(
         existing?.status === "failed" &&
         Date.now() - existing.updatedAt < treasuryRetryMs()
       )
-        return existing;
+        return null;
 
-      const grant = projectsRepository.beginTreasuryGrant({
+      // A project is never allowed to manufacture its own sponsor. The treasury
+      // must already exist in Solard and have enough on-chain SOL for this seed.
+      // If it is missing/empty, simply leave the project waiting for funding.
+      let treasury;
+      try {
+        treasury = await getTreasuryWallet();
+      } catch (error) {
+        log("warn", "treasury.unavailable", {
+          projectId: project.id,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+
+      let treasuryBalance = 0;
+      try {
+        treasuryBalance = await measure(
+          {
+            start: () => "Treasury seed balance",
+            end: (lamports: number) => ({ lamports }),
+            projectId: project.id,
+            address: treasury.address,
+          },
+          () => getBalanceLamports(treasury.address),
+        );
+      } catch (error) {
+        log("warn", "treasury.balance_unavailable", {
+          projectId: project.id,
+          address: treasury.address,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      }
+
+      if (treasuryBalance < shortfall) {
+        log("warn", "treasury.insufficient", {
+          projectId: project.id,
+          address: treasury.address,
+          balanceLamports: treasuryBalance,
+          requiredLamports: shortfall,
+        });
+        return null;
+      }
+
+      // Only create a visible grant once there is a real funded treasury and we
+      // are actually about to submit the transaction.
+      projectsRepository.beginTreasuryGrant({
         projectId: project.id,
         toAddress: project.walletAddress,
         lamports: shortfall,
@@ -90,8 +138,13 @@ export async function ensureFirstMilestoneSeed(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         projectsRepository.failTreasuryGrant(project.id, message);
-        projectsRepository.event(project.id, "treasury.seed.failed", message);
-        throw error;
+        // Keep this in operator logs. Funding-side infrastructure failure is not
+        // an agent/project ERROR in the public activity stream.
+        log("warn", "treasury.seed.send_failed", {
+          projectId: project.id,
+          reason: message,
+        });
+        return null;
       }
     },
   );

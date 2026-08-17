@@ -44,7 +44,7 @@ export default function ProjectPage({
     <div
       id="crowdclaw-project"
       data-bundle={JSON.stringify(bundle)}
-      className="min-h-screen bg-[var(--void)] text-[var(--bone)]"
+      className="cc-project-doc-enter min-h-screen bg-[var(--void)] text-[var(--bone)]"
     >
       <ProjectApp
         bundle={bundle}
@@ -55,6 +55,7 @@ export default function ProjectPage({
         selectedVersion={null}
         artifactCode={null}
         artifactCodeVersion={null}
+        previewRevision={bundle.project.updatedAt}
         toast={null}
         steerText=""
         steerAmount="1"

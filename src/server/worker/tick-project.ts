@@ -44,11 +44,20 @@ function usagePatch(usage: AgentUsage) {
 function progressWriter(projectId: string, runId: string) {
   let lastWrite = 0;
   let lastLength = 0;
+  let lastNote = "";
   return (text: string, note: string, usage: AgentUsage, force = false) => {
     const t = Date.now();
-    if (!force && t - lastWrite < 250 && text.length - lastLength < 80) return;
+    const noteChanged = note !== lastNote;
+    if (
+      !force &&
+      !noteChanged &&
+      t - lastWrite < 250 &&
+      text.length - lastLength < 80
+    )
+      return;
     lastWrite = t;
     lastLength = text.length;
+    lastNote = note;
     const preview = text.slice(-1800);
     projectsRepository.updateRunUsage(runId, {
       ...usagePatch(usage),
@@ -99,7 +108,7 @@ async function revealPlanningResult(
       note: liveNote,
     });
     projectsRepository.updateLiveRun(projectId, runId, preview, liveNote);
-    await Bun.sleep(120);
+    await Bun.sleep(320);
   }
   return preview;
 }
@@ -188,13 +197,13 @@ export async function planProject(
           result.usage,
         );
 
-        await measure(
+        const saved = await measure(
           {
             start: () => "Publish roadmap",
-            end: (saved: Project) => ({
-              name: saved.name,
-              milestones: saved.milestones.length,
-              status: saved.status,
+            end: (value: Project) => ({
+              name: value.name,
+              milestones: value.milestones.length,
+              status: value.status,
             }),
             projectId: project.id,
             runId: run.id,
@@ -208,6 +217,10 @@ export async function planProject(
               milestones,
             ),
         );
+        projectsRepository.setStatus(project.id, saved.status, {
+          agentNote: plan.note,
+          streamPreview: text,
+        });
       },
     );
 
@@ -293,6 +306,7 @@ export async function buildNext(
   });
   let usage: AgentUsage | null = null;
   let activityText = "";
+  let lastActivityEvent = "";
   const writeProgress = progressWriter(project.id, run.id);
   const stopHeartbeat = heartbeat(project.id, owner, leaseMs);
 
@@ -365,6 +379,14 @@ export async function buildNext(
                 activityText = activity.text;
                 usage = activity.usage;
                 writeProgress(activity.text, activity.note, activity.usage);
+                if (activity.note && activity.note !== lastActivityEvent) {
+                  lastActivityEvent = activity.note;
+                  projectsRepository.event(
+                    project.id,
+                    "agent.activity",
+                    activity.note,
+                  );
+                }
               },
             ),
         );

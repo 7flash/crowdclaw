@@ -1,4 +1,5 @@
 import { SOL_LAMPORTS } from "../../shared/constants";
+import { publicErrorLabel } from "../../shared/public-error";
 import type { Project } from "../../shared/types";
 import { BrandBar } from "./BrandBar";
 
@@ -19,7 +20,7 @@ export function HomeView(props: HomeViewProps) {
     <div className="cc min-h-screen">
       <BrandBar />
       <div
-        className={`mx-auto px-5 pb-16 ${planning ? "max-w-[660px]" : "max-w-[700px]"}`}
+        className={`mx-auto px-5 pb-16 ${planning ? "max-w-[700px]" : "max-w-[700px]"}`}
       >
         {!planning ? (
           <section className="cc-rise pt-[78px] pb-[30px] text-center">
@@ -66,7 +67,7 @@ export function HomeView(props: HomeViewProps) {
                 </span>
                 <button
                   className="cc-btn cc-btn-primary ml-auto min-w-[54px]"
-                  disabled={props.draft.trim().length < 10}
+                  disabled={props.draft.trim().length < 10 || props.creating}
                   onClick={props.onCreate}
                   aria-label="Create"
                 >
@@ -81,7 +82,7 @@ export function HomeView(props: HomeViewProps) {
             ) : null}
           </section>
         ) : (
-          <section className="pt-[72px] pb-[30px]">
+          <section className="pt-[64px] pb-[30px]">
             <Planning
               project={props.planningProject}
               idea={props.draft}
@@ -106,7 +107,7 @@ export function HomeView(props: HomeViewProps) {
                   {shortStatus(project.status)}
                 </span>
                 <span className="font-data text-[10px] text-[var(--dim)]">
-                  {(project.onchainLamports / SOL_LAMPORTS).toFixed(3)} SOL
+                  {(project.onchainLamports / SOL_LAMPORTS).toFixed(4)} SOL
                 </span>
               </a>
             ))}
@@ -139,6 +140,9 @@ function Planning({
   const milestones = preview.milestones.length
     ? preview.milestones
     : project?.milestones || [];
+  const ready = Boolean(
+    project && project.milestones.length === 3 && project.status !== "planning",
+  );
   const stage = planStage({
     project,
     creating,
@@ -148,39 +152,44 @@ function Planning({
   });
 
   return (
-    <div className="cc-project-transition text-left">
-      <div className="border-l-2 border-[var(--claw)] pl-4 text-[15px] text-[var(--dim)]">
-        {project?.idea || idea}
-      </div>
+    <div className="cc-project-transition cc-plan-shell text-left">
+      <div className="cc-plan-idea">{project?.idea || idea}</div>
 
-      <div className="mt-8 flex items-center gap-3 font-data text-[10px] uppercase tracking-[.18em] text-[var(--dimmer)]">
+      <div className="cc-plan-state">
         <span className="cc-plan-signal" aria-hidden="true" />
         <span key={stage} className="cc-fade">
           {stage}
         </span>
+        {project?.agentId ? (
+          <span className="ml-auto text-[var(--dimmer)]">
+            {project.agentId}
+          </span>
+        ) : null}
       </div>
-
-      {thought ? (
-        <div className="cc-fade mt-4 font-data text-[11px] text-[var(--dim)]">
-          {thought}
+      {!ready ? (
+        <div className="cc-plan-motion" aria-hidden="true">
+          <i />
         </div>
       ) : null}
 
-      <div className="mt-7 min-h-[52px]">
+      <div className="mt-8 min-h-[58px]">
         {name ? (
-          <div className="font-display cc-fade text-[clamp(2rem,7vw,3rem)] font-extrabold uppercase leading-none">
+          <div className="cc-project-title font-display cc-fade text-[clamp(2.35rem,8vw,3.55rem)] font-extrabold uppercase leading-none">
             {name}
           </div>
         ) : null}
       </div>
 
+      {thought ? (
+        <div className="cc-plan-thought cc-fade">{thought}</div>
+      ) : null}
       {summary ? (
-        <div className="cc-fade mt-2 max-w-[560px] text-[13px] leading-5 text-[var(--dim)]">
+        <div className="cc-fade mt-2 max-w-[600px] text-[13px] leading-5 text-[var(--dim)]">
           {summary}
         </div>
       ) : null}
 
-      <div className="mt-6 grid gap-[5px]">
+      <div className="mt-7 grid gap-[6px]">
         {[0, 1, 2].map((index) => {
           const milestone = milestones[index];
           if (!milestone) {
@@ -204,7 +213,7 @@ function Planning({
                 {(
                   (milestone.costCredits * lamportsPerCredit) /
                   SOL_LAMPORTS
-                ).toFixed(3)}{" "}
+                ).toFixed(4)}{" "}
                 SOL
               </span>
             </div>
@@ -212,16 +221,19 @@ function Planning({
         })}
       </div>
 
-      {project &&
-      project.milestones.length === 3 &&
-      project.status !== "planning" ? (
-        <a
-          id="crowdclaw-created-project-link"
-          className="sr-only"
-          href={`/projects/${encodeURIComponent(project.id)}`}
-        >
-          OPEN
-        </a>
+      {ready && project ? (
+        <div className="cc-plan-ready cc-fade">
+          <span className="font-data text-[10px] tracking-[.16em] text-[var(--mint)]">
+            READY
+          </span>
+          <a
+            id="crowdclaw-created-project-link"
+            className="cc-btn no-underline"
+            href={`/projects/${encodeURIComponent(project.id)}`}
+          >
+            OPEN →
+          </a>
+        </div>
       ) : null}
     </div>
   );

@@ -8,7 +8,7 @@ export function jsxAiRuntime(): string {
 }
 
 export function lamportsPerCredit(): number {
-  return positiveInt("LAMPORTS_PER_CREDIT", 10_000_000);
+  return positiveInt("LAMPORTS_PER_CREDIT", 100_000);
 }
 
 export function modelName(): string {
@@ -29,6 +29,10 @@ export function agentMaxSteps(): number {
 
 export function agentRequestTimeoutMs(): number {
   return positiveInt("AGENT_REQUEST_TIMEOUT_MS", 90_000, 5_000);
+}
+
+export function buildRequestTimeoutMs(): number {
+  return positiveInt("AGENT_BUILD_TIMEOUT_MS", 150_000, 30_000);
 }
 
 export function agentMaxDurationMs(): number {
@@ -65,10 +69,6 @@ export function treasurySeedEnabled(): boolean {
 
 export function treasuryWalletName(): string {
   return process.env.TREASURY_WALLET_NAME?.trim() || "crowdclaw-main";
-}
-
-export function treasuryAutoCreate(): boolean {
-  return process.env.TREASURY_AUTO_CREATE !== "0";
 }
 
 export function treasuryRetryMs(): number {

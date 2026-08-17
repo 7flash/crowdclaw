@@ -34,6 +34,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
     selectedVersion: null as number | null,
     artifactCode: null as string | null,
     artifactCodeVersion: null as number | null,
+    previewRevision: initial.project.updatedAt,
     toast: null as string | null,
     steerText: "",
     steerAmount: "1",
@@ -51,6 +52,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
         selectedVersion={state.selectedVersion}
         artifactCode={state.artifactCode}
         artifactCodeVersion={state.artifactCodeVersion}
+        previewRevision={state.previewRevision}
         toast={state.toast}
         steerText={state.steerText}
         steerAmount={state.steerAmount}
@@ -73,19 +75,35 @@ export default function mount({ params }: { params: Record<string, string> }) {
   };
 
   const applyBundle = (next: ProjectBundle) => {
-    const previousArtifactCount = state.bundle.artifacts.length;
+    const previous = state.bundle;
+    const previousArtifactCount = previous.artifacts.length;
+    const previewChanged =
+      next.project.streamPreview !== previous.project.streamPreview;
+    const wroteIndex =
+      previewChanged &&
+      /(?:^|\n)WRITE index\.html(?:\n|$)/.test(next.project.streamPreview);
+    const artifactAdded = next.artifacts.length > previousArtifactCount;
+    const statusChanged = next.project.status !== previous.project.status;
+    const balanceChanged =
+      next.project.onchainLamports !== previous.project.onchainLamports;
+
     state.bundle = next;
     state.refreshing = false;
     state.error = null;
-    if (
-      state.selectedVersion == null &&
-      next.artifacts.length !== previousArtifactCount
-    ) {
+    if (wroteIndex || artifactAdded) state.previewRevision = Date.now();
+    if (state.selectedVersion == null && artifactAdded) {
       state.artifactCode = null;
       state.artifactCodeVersion = null;
       if (state.tab === "code") void loadCurrentCode();
     }
     draw();
+    animateProjectChange({
+      previewChanged,
+      wroteIndex,
+      artifactAdded,
+      statusChanged,
+      balanceChanged,
+    });
   };
 
   const refresh = async (showSpinner = false) => {
@@ -186,6 +204,118 @@ export default function mount({ params }: { params: Record<string, string> }) {
       draw();
     }
   };
+
+  const animateProjectChange = (change: {
+    previewChanged: boolean;
+    wroteIndex: boolean;
+    artifactAdded: boolean;
+    statusChanged: boolean;
+    balanceChanged: boolean;
+  }) => {
+    requestAnimationFrame(() => {
+      if (change.statusChanged) {
+        root.querySelector(".cc-stage")?.animate(
+          [
+            { transform: "translateY(7px)", opacity: 0.72 },
+            { transform: "translateY(0)", opacity: 1 },
+          ],
+          { duration: 420, easing: "cubic-bezier(.16,.84,.28,1)" },
+        );
+      }
+      if (change.previewChanged) {
+        root.querySelector(".cc-cinema-current")?.animate(
+          [
+            { transform: "translateX(-10px)", opacity: 0 },
+            { transform: "translateX(0)", opacity: 1 },
+          ],
+          { duration: 300, easing: "cubic-bezier(.16,.84,.28,1)" },
+        );
+      }
+      if (change.wroteIndex || change.artifactAdded) {
+        root.querySelector(".cc-preview-frame")?.animate(
+          [
+            { opacity: 0.35, filter: "brightness(.55)" },
+            { opacity: 1, filter: "brightness(1)" },
+          ],
+          { duration: 520, easing: "ease-out" },
+        );
+      }
+      if (change.balanceChanged) {
+        root.querySelector(".cc-live-wallet")?.animate(
+          [
+            { transform: "scale(.96)", opacity: 0.5 },
+            { transform: "scale(1)", opacity: 1 },
+          ],
+          { duration: 380, easing: "cubic-bezier(.2,.9,.2,1)" },
+        );
+      }
+    });
+  };
+
+  const startEntryAnimation = () => {
+    const key = `crowdclaw:handoff:${projectId}`;
+    let handoff = false;
+    try {
+      handoff = sessionStorage.getItem(key) === "1";
+      sessionStorage.removeItem(key);
+    } catch {}
+    if (!handoff) return;
+
+    const curtain = document.createElement("div");
+    curtain.className = "cc-handoff-curtain";
+    curtain.innerHTML = '<i class="cc-handoff-line"></i>';
+    document.body.appendChild(curtain);
+    const line = curtain.querySelector("i") as HTMLElement | null;
+    if (line) line.style.transform = "scaleX(1)";
+
+    requestAnimationFrame(() => {
+      root.querySelector("main")?.animate(
+        [
+          {
+            opacity: 0,
+            transform: "translateY(30px) scale(.98)",
+            filter: "blur(6px)",
+          },
+          {
+            opacity: 1,
+            transform: "translateY(0) scale(1)",
+            filter: "blur(0)",
+          },
+        ],
+        {
+          duration: 760,
+          delay: 90,
+          easing: "cubic-bezier(.16,.84,.28,1)",
+          fill: "both",
+        },
+      );
+      line?.animate([{ transform: "scaleX(1)" }, { transform: "scaleX(0)" }], {
+        duration: 620,
+        easing: "cubic-bezier(.4,0,.2,1)",
+        fill: "forwards",
+      });
+      const fade = curtain.animate([{ opacity: 1 }, { opacity: 0 }], {
+        duration: 650,
+        delay: 100,
+        easing: "ease-in",
+        fill: "forwards",
+      });
+      fade.addEventListener("finish", () => curtain.remove(), { once: true });
+    });
+  };
+
+  const updateRunClock = () => {
+    const run = state.bundle.runs.find(
+      (item) => item.status === "running" && item.kind === "build",
+    );
+    const text = run
+      ? `${Math.max(0, Math.floor((Date.now() - run.startedAt) / 1000))}s`
+      : "";
+    root.querySelectorAll("[data-run-clock]").forEach((node) => {
+      (node as HTMLElement).textContent = text;
+    });
+  };
+  const runClockTimer = setInterval(updateRunClock, 1000);
 
   const actions: ProjectActions = {
     setTab(tab) {
@@ -310,7 +440,10 @@ export default function mount({ params }: { params: Record<string, string> }) {
     },
   };
 
-  window.addEventListener("pagehide", () => disconnectLive());
+  window.addEventListener("pagehide", () => {
+    disconnectLive();
+    clearInterval(runClockTimer);
+  });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
     void refresh(false);
@@ -319,6 +452,8 @@ export default function mount({ params }: { params: Record<string, string> }) {
 
   draw();
   connectLive();
+  updateRunClock();
+  startEntryAnimation();
 }
 
 function parseBundle(raw: string | undefined): ProjectBundle | null {

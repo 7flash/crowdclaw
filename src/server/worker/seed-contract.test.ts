@@ -36,4 +36,28 @@ describe("first milestone sponsorship", () => {
     expect(begin).toBeGreaterThan(-1);
     expect(send).toBeGreaterThan(begin);
   });
+  test("never auto-creates a treasury wallet", () => {
+    const wallet = readFileSync(
+      resolve(import.meta.dir, "../wallets/solard.ts"),
+      "utf8",
+    );
+    const config = readFileSync(
+      resolve(import.meta.dir, "../config.ts"),
+      "utf8",
+    );
+    expect(wallet).not.toContain("Solard create treasury");
+    expect(wallet).not.toContain("sdk().createWallet(wanted)");
+    expect(config).not.toContain("TREASURY_AUTO_CREATE");
+  });
+
+  test("checks treasury balance before creating a visible grant", () => {
+    const service = readFileSync(
+      resolve(import.meta.dir, "../services/treasury-service.ts"),
+      "utf8",
+    );
+    const balance = service.indexOf("Treasury seed balance");
+    const begin = service.indexOf("beginTreasuryGrant");
+    expect(balance).toBeGreaterThan(-1);
+    expect(begin).toBeGreaterThan(balance);
+  });
 });

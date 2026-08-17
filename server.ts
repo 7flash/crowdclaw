@@ -34,41 +34,50 @@ if (treasurySeedEnabled()) {
   const treasury = await measure(
     {
       start: () => "Treasury wallet",
-      end: (wallet: { name: string; address: string }) => wallet,
-    },
-    () => getTreasuryWallet(),
-  );
-
-  const balanceLamports = await measure(
-    {
-      start: () => "Treasury balance",
-      end: (lamports: number | null) =>
-        lamports == null
-          ? { available: false }
-          : {
-              lamports,
-              sol: lamports / SOL_LAMPORTS,
-            },
-      address: treasury.address,
+      end: (wallet: { name: string; address: string } | null) =>
+        wallet || { available: false },
       catch: (error) => {
-        log("warn", "treasury.balance_unavailable", {
-          address: treasury.address,
+        log("warn", "treasury.unavailable", {
           error: error instanceof Error ? error.message : String(error),
         });
         return null;
       },
     },
-    () => getBalanceLamports(treasury.address),
+    () => getTreasuryWallet(),
   );
 
-  log("info", "treasury.ready", {
-    name: treasury.name,
-    address: treasury.address,
-    balanceLamports: balanceLamports,
-    balanceSol: balanceLamports == null ? null : balanceLamports / SOL_LAMPORTS,
-  });
-  if (balanceLamports === 0) {
-    log("warn", "treasury.empty", { address: treasury.address });
+  if (treasury) {
+    const balanceLamports = await measure(
+      {
+        start: () => "Treasury balance",
+        end: (lamports: number | null) =>
+          lamports == null
+            ? { available: false }
+            : {
+                lamports,
+                sol: lamports / SOL_LAMPORTS,
+              },
+        address: treasury.address,
+        catch: (error) => {
+          log("warn", "treasury.balance_unavailable", {
+            address: treasury.address,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return null;
+        },
+      },
+      () => getBalanceLamports(treasury.address),
+    );
+
+    log("info", "treasury.ready", {
+      name: treasury.name,
+      address: treasury.address,
+      balanceLamports: balanceLamports,
+      balanceSol:
+        balanceLamports == null ? null : balanceLamports / SOL_LAMPORTS,
+    });
+    if (balanceLamports === 0)
+      log("warn", "treasury.empty", { address: treasury.address });
   }
 }
 

@@ -125,11 +125,20 @@ async function tick(): Promise<boolean> {
   let snapshot = projectsRepository.get(projectId);
   if (!snapshot) return false;
   if (["completed", "failed"].includes(snapshot.status)) return false;
-  if (snapshot.retryAt && snapshot.retryAt > Date.now()) return false;
 
   projectsRepository.recoverProjectWork(projectId);
   snapshot = projectsRepository.get(projectId);
   if (!snapshot) return false;
+
+  // Planning/build retry backoff may pause model work. Funding is different:
+  // while waiting for SOL we still reconcile the project wallet every agent poll
+  // so a real inbound transfer can wake the project immediately.
+  if (
+    snapshot.status !== "waiting_funds" &&
+    snapshot.retryAt &&
+    snapshot.retryAt > Date.now()
+  )
+    return false;
 
   if (snapshot.status === "planning") {
     const planningSnapshot = snapshot;
@@ -157,16 +166,66 @@ async function tick(): Promise<boolean> {
     return true;
   }
 
-  // Every new project gets one platform seed for milestone 1. A failed or
-  // unconfirmed seed waits for TREASURY_RETRY_MS rather than spinning every tick.
-  if (
-    snapshot.done === 0 &&
-    ["seeding", "waiting_funds"].includes(snapshot.status)
-  ) {
+  // A waiting project is a funding watch. Force only the balance reconciliation;
+  // syncProjectFunding indexes signatures only when the observed balance grows.
+  // This makes direct supporter transfers visible within roughly one agent poll.
+  if (snapshot.status === "waiting_funds") {
+    let funded = await measure(
+      {
+        start: () => "Watch project SOL",
+        end: projectSummary,
+        projectId,
+      },
+      () => syncProjectFunding(snapshot!, true),
+    );
+    funded = projectsRepository.markQueuedIfFunded(funded.id) || funded;
+    if (funded.status === "queued") {
+      snapshot = funded;
+    } else {
+      // Treasury retryAt throttles only another platform-seed attempt. It must
+      // never prevent direct user funding from being observed above.
+      const mayRetrySeed =
+        funded.done === 0 &&
+        treasurySeedEnabled() &&
+        (!funded.retryAt || funded.retryAt <= Date.now());
+      if (!mayRetrySeed) return false;
+
+      if (
+        !projectsRepository.claimLease(
+          projectId,
+          owner,
+          ["waiting_funds"],
+          agentLeaseMs(),
+        )
+      )
+        return false;
+      let seeded: Awaited<ReturnType<typeof seedFirstMilestone>> = null;
+      try {
+        seeded = await measure(
+          {
+            start: () => "Seed project",
+            end: projectSummary,
+            projectId,
+          },
+          () => seedFirstMilestone(funded),
+        );
+      } finally {
+        projectsRepository.releaseLease(projectId, owner);
+      }
+      if (!seeded || seeded.status !== "queued") return Boolean(seeded);
+      snapshot = seeded;
+    }
+  }
+
+  // A freshly planned project enters seeding once. If the platform treasury is
+  // unavailable it becomes waiting_funds; direct funding then follows the watch
+  // path above on subsequent ticks.
+  if (snapshot.done === 0 && snapshot.status === "seeding") {
     const seedSnapshot = snapshot;
-    if (!treasurySeedEnabled() && seedSnapshot.status === "seeding") {
+    if (!treasurySeedEnabled()) {
       projectsRepository.setStatus(seedSnapshot.id, "waiting_funds", {
         agentNote: "WAITING",
+        retryAt: 0,
       });
       return false;
     }
@@ -174,7 +233,7 @@ async function tick(): Promise<boolean> {
       !projectsRepository.claimLease(
         projectId,
         owner,
-        [seedSnapshot.status],
+        ["seeding"],
         agentLeaseMs(),
       )
     )
@@ -211,11 +270,13 @@ async function tick(): Promise<boolean> {
   project = projectsRepository.markQueuedIfFunded(project.id) || project;
 
   if (project.status !== "queued") return false;
+  if (project.retryAt && project.retryAt > Date.now()) return false;
   const next = project.milestones[project.done];
   if (!next) return false;
   if (project.availableCredits < next.costCredits) {
     projectsRepository.setStatus(project.id, "waiting_funds", {
       agentNote: "WAITING",
+      retryAt: 0,
     });
     return false;
   }

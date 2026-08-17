@@ -16,8 +16,8 @@ describe("minimal public language", () => {
     );
     expect(project).toContain("SUPPORTERS");
     expect(project).toContain("CrowdClaw");
-    expect(project).toContain("TREASURY");
-    expect(project).toContain("STEER NEXT");
+    expect(project).toContain("AGENT");
+    expect(project).toContain("STEER");
     expect(project).toContain("SOL");
     expect(constants).not.toContain("◎");
     expect(project).not.toContain("build credits");

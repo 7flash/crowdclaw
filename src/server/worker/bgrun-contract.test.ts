@@ -12,7 +12,8 @@ describe("per-project bgrun agents", () => {
     expect(manager).toContain("handleRun({");
     expect(manager).toContain("bun project-agent.ts ${projectId}");
     expect(manager).not.toContain("process.execPath");
-    expect(manager).toContain("readFileTail");
+    expect(manager).toContain("force: false");
+    expect(manager).not.toContain("force: Boolean(existing)");
   });
 
   test("web no longer embeds the shared worker", () => {

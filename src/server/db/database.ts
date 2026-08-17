@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { Database as BunSqlite } from "bun:sqlite";
 import { Database, z } from "sqlite-zod-orm";
 import { databasePath } from "../config";
 
@@ -174,7 +175,19 @@ const FundingObservationSchema = z.object({
 
 const rawPath = databasePath();
 const dbPath = rawPath === ":memory:" ? rawPath : resolve(rawPath);
-if (dbPath !== ":memory:") mkdirSync(dirname(dbPath), { recursive: true });
+if (dbPath !== ":memory:") {
+  mkdirSync(dirname(dbPath), { recursive: true });
+  // CrowdClaw intentionally uses a web process plus independent bgrun agent
+  // processes. WAL lets readers coexist with the single autonomous writer and
+  // avoids the DELETE-journal lock failures seen during live SSE reads.
+  const bootstrap = new BunSqlite(dbPath, { create: true });
+  try {
+    bootstrap.exec("PRAGMA journal_mode=WAL;");
+    bootstrap.exec("PRAGMA synchronous=NORMAL;");
+  } finally {
+    bootstrap.close();
+  }
+}
 
 export const db = new Database(dbPath, {
   projects: ProjectSchema,

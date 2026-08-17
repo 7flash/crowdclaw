@@ -24,6 +24,7 @@ export function ProjectApp(props: {
   selectedVersion: number | null;
   artifactCode: string | null;
   artifactCodeVersion: number | null;
+  previewRevision: number;
   toast: string | null;
   steerText: string;
   steerAmount: string;
@@ -42,6 +43,7 @@ export function ProjectApp(props: {
         selectedVersion={props.selectedVersion}
         artifactCode={props.artifactCode}
         artifactCodeVersion={props.artifactCodeVersion}
+        previewRevision={props.previewRevision}
         steerText={props.steerText}
         steerAmount={props.steerAmount}
         steering={props.steering}

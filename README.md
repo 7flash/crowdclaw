@@ -4,149 +4,132 @@
 
 Anyone can fund it. Supporters steer what it builds next.
 
-## Flow
-
-```text
-idea
-  ↓
-project wallet
-  ↓
-bgrun project agent
-  ↓
-3 milestones
-  ↓
-CrowdClaw → first milestone SOL
-  ↓
-building
-  ↓
-playable v1
-  ↓
-community funding + steering
-  ↓
-rolling releases
-```
-
-Every project gets its own Solard wallet and its own bgrun-managed agent process. The platform automatically sponsors the first milestone from the configured CrowdClaw treasury so a new project starts building immediately instead of opening on an empty funding screen.
-
-The seed transfer is persisted before it is sent, shown live as `CrowdClaw` in Supporters, and does **not** earn steering influence. Human SOL contributions do.
-
 ## Stack
 
 - Bun
 - TradJS `4.3.0`
 - `jsx-ai@0.9.1`
-- Codex runtime (`JSX_AI_RUNTIME=codex`)
-- `gpt-5.4-mini`
+- `@openai/codex-sdk`
 - `@solard/sdk@0.2.3`
 - `bgrun@3.14.0`
 - `sqlite-zod-orm`
-- `measure-fn`
+- `measure-fn@4.0.5`
 - Tailwind 4
 
-## Processes
+## Runtime
 
-TradJS is the web app. It does not run an embedded worker loop.
-
-Creating a project calls the bgrun SDK and starts one process:
+Every project gets:
 
 ```text
-crowdclaw-agent-p_xxx
-  └─ bun project-agent.ts p_xxx
+project row + project Solard wallet
+                  ↓
+       bgrun project process
+                  ↓
+   bun project-agent.ts p_xxx
 ```
 
-That process owns only that project. SQLite is the queue/state boundary; bgrun owns PID/runtime/log observability.
+TradJS serves pages/APIs/SSE. The project process owns planning, funding observation, `jsx-ai` milestone execution, validation, and publication.
 
-```sh
-bun run bgrun
-```
+Initial planning is one bounded `runAgent()` step with one `submit_game_plan` tool call. Milestone builds use fresh chat history and the workspace as durable state.
 
-opens bgrun observability.
-
-## First milestone sponsorship
-
-After planning, a fresh project enters `seeding`.
-
-The project agent asks the treasury service for only the shortfall required to fund milestone 1:
+## Browser flow
 
 ```text
-required = first milestone cost
-shortfall = required - already confirmed project funding
-```
-
-The treasury service resolves `TREASURY_WALLET_NAME` through `@solard/sdk` and sends SOL to the project wallet.
-
-```ts
-slrd
-  .tx(treasury.address)
-  .transferSol(project.walletAddress, sol(amount))
-  .send()
-```
-
-A deterministic first-milestone grant record prevents normal retries from creating multiple grants. Submitted grants are reconciled against the project wallet before another attempt is allowed.
-
-The project page receives the grant and wallet balance over SSE. The handoff is intentionally cinematic: the Home planning state reaches `READY`, performs a normal TradJS 4.3 document navigation, and the project stage immediately becomes the funding/build surface:
-
-```text
-FUNDING
-CrowdClaw  +0.0200 SOL
-0.0000 SOL → 0.0200 SOL
-STARTING
+IDEA
+ ↓
+THINKING
+ ↓
+project name + public design note
+ ↓
+milestones reveal one by one
+ ↓
+READY
+ ↓  native cross-document view transition
+PROJECT
+ ↓
+FUNDING / WAITING
+ ↓
 BUILDING
-READ / WRITE / VALIDATE / PUBLISH
-v1 appears playable
+ ↓
+public_status + READ/WRITE/VALIDATE/PUBLISH
+ ↓
+playable artifact replaces the stage in-place
 ```
 
-## Public agent activity
+The Home result remains visible briefly at `READY` before automatic navigation. The generated project title has the same browser view-transition identity on both documents.
 
-`jsx-ai` exposes the agent loop while CrowdClaw provides an explicit `public_status` tool for short public updates. These are operational summaries, not hidden chain-of-thought.
+Public status is intentionally model-authored operational text, not hidden chain-of-thought.
 
-Examples:
+## Funding wake-up contract
+
+The address shown on `/projects/:id` is the **project wallet**. Sending SOL there does not require a page reload.
+
+While a project is `WAITING`, its bgrun process checks the project-wallet balance every `AGENT_POLL_MS` (2 seconds by default). Treasury retry backoff does **not** block this balance watch. The open project page also performs a silent `/sync` nudge every 3 seconds as a second recovery path.
+
+When enough confirmed SOL exists for the current milestone:
 
 ```text
-Tuning shrinking wall timing
-READ index.html
-WRITE index.html
-Testing collision rules
-VALIDATE
-PUBLISH
+wallet balance increases
+        ↓
+SQLite funding/ledger/supporter state updates
+        ↓
+status → queued, retryAt → 0
+        ↓
+same project process starts the milestone
+        ↓
+SSE snapshots update the browser every ~500ms
+        ↓
+BUILDING + live tool/status activity
+        ↓
+artifact.published
+        ↓
+iframe appears without document reload
 ```
 
-File tools remain:
+The transaction-signature/supporter index runs only when the observed wallet balance grows, so the frequent waiting-state balance poll does not also scan transaction history every tick.
 
-```text
-list_files
-read_file
-write_file
-public_status
-complete_milestone
+## Optional first-milestone sponsorship
+
+CrowdClaw never manufactures a treasury wallet. If automatic sponsorship is enabled, `TREASURY_WALLET_NAME` must already resolve to a funded Solard wallet.
+
+```dotenv
+TREASURY_SEED_ENABLED=1
+TREASURY_WALLET_NAME=crowdclaw-main
+SLRD_MASTER_KEY=...
 ```
 
-`complete_milestone` is only a publication request. CrowdClaw independently validates `index.html` before charging the milestone and publishing the immutable release.
+If that wallet exists and has enough SOL, CrowdClaw sends only the first-milestone shortfall to the project wallet. The grant is persisted and shown as CrowdClaw support, but receives zero steering influence.
+
+If the treasury is missing, empty, or unavailable, the project simply remains `WAITING`. It is still fully fundable by sending SOL directly to the project wallet.
 
 ## Supporters and steering
 
-The platform seed is displayed as CrowdClaw but earns zero influence.
+Attributed human donations earn steering influence proportional to SOL. Supporters sign steering instructions with their donating wallet and spend influence to shape upcoming work. Open steering is passed into the next milestone agent weighted by influence.
 
-Confirmed human donations earn influence proportional to attributed SOL. Supporters can spend that influence on signed steering instructions for future work. Open steering is passed into the next `jsx-ai` build weighted by influence.
+## `measure-fn`
 
-## Pages
+CrowdClaw uses the current closure-nested API:
 
-```text
-/
-  idea
-  one-step structured planning
-  normal navigation
-
-/projects/:id
-  live build / playable artifact
-  agent
-  treasury
-  now / next / shipped
-  supporters
-  steer next
+```ts
+await measure(
+  {
+    start: () => "Build milestone 1",
+    end: result => ({ version: result.version }),
+    projectId,
+  },
+  async () => {
+    await measure(
+      {
+        start: () => "Validate artifact",
+        end: issues => ({ issues: issues.length }),
+      },
+      validate,
+    )
+  },
+)
 ```
 
-TradJS 4.3 uses real document navigation. Direct links and refreshes load `/projects/:id` from SQLite, then SSE keeps the page current.
+There is no injected child `m`; nested calls inherit span nesting automatically. `catch` is used only where a real fallback exists.
 
 ## Environment
 
@@ -172,18 +155,15 @@ SOLANA_RPC_URL=https://api.mainnet-beta.solana.com
 SOLANA_RPC_TIMEOUT_MS=12000
 LAMPORTS_PER_CREDIT=10000000
 
-SLRD_MASTER_KEY=change-me
 TREASURY_SEED_ENABLED=1
 TREASURY_WALLET_NAME=crowdclaw-main
-TREASURY_AUTO_CREATE=1
 TREASURY_RETRY_MS=15000
+SLRD_MASTER_KEY=change-me
 
 ALLOW_DEV_FUNDING=0
 ```
 
-CrowdClaw does not validate model-provider credentials. `jsx-ai` owns provider selection, Codex login, and API-key validation. CrowdClaw passes `JSX_AI_RUNTIME` explicitly into each `runAgent()` call so detached bgrun agents cannot fall back to provider API transport. The Codex runtime dependency `@openai/codex-sdk` is installed with this project.
-
-With `TREASURY_AUTO_CREATE=1`, CrowdClaw creates the named Solard treasury if it does not already exist. Fund that wallet with SOL before creating public projects.
+CrowdClaw does not duplicate provider credential validation. `jsx-ai` owns provider/runtime/auth behavior. `JSX_AI_RUNTIME` is passed explicitly into `runAgent()`.
 
 ## Run
 
@@ -193,13 +173,13 @@ bun install
 bun run dev
 ```
 
-Then:
+bgrun dashboard:
 
 ```sh
 bun run bgrun
 ```
 
-## Verify
+Verification:
 
 ```sh
 bun run verify
@@ -212,108 +192,3 @@ Health:
 /api/health/live
 /api/health/ready
 ```
-
-## Upgrading over an older CrowdClaw checkout
-
-CrowdClaw 4.10.1 includes inert compatibility files for paths used by the retired embedded shared-worker architecture. This makes archive overlays safe: an old `app/middleware.ts` or `src/server/worker/worker.ts` can no longer survive an upgrade and import obsolete configuration such as `workerLeaseMs`.
-
-A clean extraction is still preferred when upgrading major architecture revisions.
-
-
-## First-run handoff
-
-The first project visit does not open on a dashboard. Before v1 exists, the main stage owns the sequence:
-
-```text
-FUNDING
-CrowdClaw ───────────────→ +SOL
-
-STARTING
-
-BUILDING
-OPEN WORKSPACE
-FILES
-<jsx-ai status + tool actions>
-
-SHIPPING
-
-V1
-<playable iframe>
-```
-
-`OPEN WORKSPACE` and `FILES` are emitted from real local work before the first model response, so a slow provider first token cannot make the project look frozen. Once an artifact is published, the same stage becomes the playable release.
-
-### Agent runtime
-
-Initial planning is deliberately **one `runAgent()` model step and one `submit_game_plan` tool call**. There is no provider text stream and there are no automatic planner retries. A 429 therefore becomes a visible `QUOTA` failure instead of silently producing several more requests. The structured result contains the slug, summary, one short public design note, and exactly three milestones; CrowdClaw then reveals that single result progressively over SSE.
-
-Milestone implementation also uses `runAgent()`: JSX describes capabilities, `runAgent()` owns model/tool/history iteration and budgets, while CrowdClaw owns filesystem effects, public activity, artifact validation, persistence, funding, and publication. Every milestone starts with fresh chat history and treats the project workspace as durable state. `complete_milestone` cannot finish a run until host-side validation accepts `index.html`.
-
-
-## Agent process startup
-
-Project creation is non-blocking. The web process asks bgrun to launch the project agent in the background and returns the new project immediately. The launcher uses `bun project-agent.ts <project-id>` with the project root passed separately to bgrun, which keeps the command portable across Windows and Unix shells. If the child exits during startup, its bgrun stdout/stderr tail is written to the server log and the project surfaces `AGENT ERROR` while the supervisor can retry it.
-
-## Windows + bgrun
-
-Project agents are launched through bgrun with the intentionally simple command:
-
-```text
-bun project-agent.ts <project-id>
-```
-
-The project root is supplied separately as bgrun's `directory`. Do not wrap `process.execPath` in quotes inside the command string: on Windows bgrun executes the command through `cmd.exe`, and a pre-quoted executable can be treated as a literal command name.
-
-
-
-## Gemini schema compatibility
-
-CrowdClaw keeps provider tool schemas intentionally small and validates stricter constraints in the host. This avoids sending unsupported JSON Schema keywords such as `additionalProperties` to Gemini function declarations. Initial planning remains one `runAgent()` model step with no silent provider retries.
-
-## Treasury RPC
-
-`SOLANA_RPC_URL` is the single Solana RPC setting for both CrowdClaw balance/indexing calls and `@solard/sdk` transaction sending. On startup the server logs the `crowdclaw-main` address and its current SOL balance. Fund that wallet before expecting automatic first-milestone sponsorship.
-
-
-## Observability
-
-CrowdClaw uses the current `measure-fn` action API directly. Nestedness comes from nested `measure()` calls; no child measurement function is injected into callbacks. Important spans use `start`, `end`, metadata, and `catch` only where a fallback is intentional.
-
-Operator logs are deliberately summarized. Model spans report tool names and normalized token usage rather than dumping Gemini raw responses or thought signatures; filesystem spans report actions and sizes; funding spans report lamports/status instead of serializing full project rows.
-
-```text
-→ Agent tick p_xxx
-  → Plan project
-    → Generate roadmap
-      → jsx-ai planning agent
-        → Plan model 1
-        ✓ { tools: [submit_game_plan], usage: ... }
-        → Tool submit_game_plan
-      ✓ { steps: 1, toolCalls: 1, usage: ... }
-    → Publish roadmap
-
-  → Seed project
-    → Ensure treasury seed
-      → Send treasury SOL
-    → Confirm seed
-
-  → Build milestone 1
-    → Run build agent
-      → Build model 1
-      → Tool write_file
-      → Tool complete_milestone
-    → Validate artifact
-    → Publish v1
-```
-
-Treasury failures and delayed confirmations are also bounded: a failed/unconfirmed seed waits `TREASURY_RETRY_MS` before another send/reconciliation cycle instead of hot-looping every agent tick. A newly submitted transfer still gets a short confirmation burst so v1 can begin quickly when RPC observes it.
-
-
-## Project UI
-
-The project document uses one live stage and a compact event rail rather than separate status dashboards. Funding, build tool activity, and publication are projected from the authoritative SSE `ProjectBundle`; the playable release replaces the stage when published. See `docs/cinematic-ui.md`.
-
-
-### Temporary model outages
-
-Gemini `503/502/504`, high-demand responses, network resets and timeouts are treated as temporary infrastructure states. The project remains active, shows `BUSY`, and retries later with exponential backoff. `429` quota errors and malformed/permanent requests remain explicit terminal errors. A retry is a fresh run of the same one-step planner; it is not an extra planning/model step inside `runAgent()`.
