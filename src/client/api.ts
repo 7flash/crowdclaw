@@ -86,7 +86,7 @@ export async function getArtifactCode(
   signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetch(
-    `/artifacts/${encodeURIComponent(projectId)}/${version}`,
+    `/artifacts/${encodeURIComponent(projectId)}/${version}/source`,
     { cache: "force-cache", signal },
   );
   if (!response.ok)

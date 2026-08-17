@@ -114,3 +114,16 @@ export function ensureWorkspaceIndex(
 export function readWorkspaceIndex(projectId: string): string {
   return readWorkspaceFile(projectId, "index.html");
 }
+
+export function ensureWorkspaceGameSource(
+  projectId: string,
+  previousSource?: string,
+): void {
+  const game = safeWorkspacePath(projectId, "game.tsx");
+  if (!existsSync(game) && previousSource)
+    writeWorkspaceFile(projectId, "game.tsx", previousSource);
+}
+
+export function readWorkspaceGameSource(projectId: string): string {
+  return readWorkspaceFile(projectId, "game.tsx");
+}

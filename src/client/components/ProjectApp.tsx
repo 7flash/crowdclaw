@@ -5,7 +5,7 @@ import { ProjectView } from "./ProjectView";
 
 export type ProjectActions = {
   setTab: (tab: Tab) => void;
-  selectVersion: (version: number) => void;
+  selectVersion: (version: number | null) => void;
   copyWallet: () => void;
   syncFunding: () => void;
   devFund: () => void;

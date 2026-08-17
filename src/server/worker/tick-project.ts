@@ -19,6 +19,10 @@ function isQuotaError(message: string): boolean {
   return /(?:\b429\b|quota|rate.?limit)/i.test(message);
 }
 
+function isTimeoutError(message: string): boolean {
+  return /(?:request\s+timed\s*out|timed\s*out|timeout)/i.test(message);
+}
+
 function isTransientModelError(message: string): boolean {
   return /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error)/i.test(
     message,
@@ -69,48 +73,20 @@ function progressWriter(projectId: string, runId: string) {
   };
 }
 
-function planningNote(preview: string): string {
-  const lines = preview
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const milestones = lines.filter((line) => line.startsWith("M|")).length;
-  if (milestones >= 3) return "3 / 3";
-  if (milestones > 0) return `${milestones} / 3`;
-  if (lines.some((line) => line.startsWith("S|"))) return "LOOP";
-  if (lines.some((line) => line.startsWith("N|"))) return "NAME";
-  return "THINKING";
-}
-
-async function revealPlanningResult(
-  projectId: string,
-  runId: string,
+function planningPreview(
   note: string,
   name: string,
   summary: string,
   milestones: Array<{ title: string; goal?: string; costCredits: number }>,
-  usage: AgentUsage,
-): Promise<string> {
-  const lines = [
-    `T|${note}`,
-    `N|${name}`,
-    `S|${summary}`,
+): string {
+  return [
+    note ? `T|${note}` : "",
+    name ? `N|${name}` : "",
+    summary ? `S|${summary}` : "",
     ...milestones.map((item) => `M|${item.title}|${item.costCredits}`),
-  ];
-  let preview = "";
-  for (const line of lines) {
-    preview = preview ? `${preview}\n${line}` : line;
-    const liveNote = planningNote(preview);
-    projectsRepository.updateRunUsage(runId, {
-      ...usagePatch(usage),
-      streamChars: preview.length,
-      preview,
-      note: liveNote,
-    });
-    projectsRepository.updateLiveRun(projectId, runId, preview, liveNote);
-    await Bun.sleep(320);
-  }
-  return preview;
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 function heartbeat(
@@ -187,15 +163,19 @@ export async function planProject(
         const { plan } = result;
         const milestones = plan.milestones.map((item) => toMilestone(item));
 
-        text = await revealPlanningResult(
-          project.id,
-          run.id,
+        text = planningPreview(
           plan.note,
           plan.slug,
           plan.summary,
           plan.milestones,
-          result.usage,
         );
+        projectsRepository.updateRunUsage(run.id, {
+          ...usagePatch(result.usage),
+          streamChars: text.length,
+          preview: text,
+          note: plan.note,
+        });
+        projectsRepository.updateLiveRun(project.id, run.id, text, plan.note);
 
         const saved = await measure(
           {
@@ -499,15 +479,28 @@ export async function buildNext(
   } catch (error) {
     const message = errorMessage(error);
     const quota = isQuotaError(message);
+    const timedOut = isTimeoutError(message);
     const transient = !quota && isTransientModelError(message);
     const latest = projectsRepository.get(project.id) || project;
     const failures = latest.failureCount + 1;
-    const terminal = !transient && failures >= MAX_FAILURES;
+    // A timeout is transient once or twice, but an endless 150s retry loop is not
+    // useful. The model timeout itself grows per retry in jsx-agent; after three
+    // timed-out attempts, surface a real failure instead of pretending to build.
+    const terminal = timedOut
+      ? failures >= 3
+      : !transient && failures >= MAX_FAILURES;
     const retryAt = terminal ? 0 : Date.now() + backoff(latest.failureCount);
+    const note = quota
+      ? "QUOTA"
+      : timedOut
+        ? "TIMEOUT"
+        : transient
+          ? "BUSY"
+          : "RETRY";
     projectsRepository.finishRun(run.id, "failed", {
       ...(usage ? usagePatch(usage) : {}),
       preview: activityText,
-      note: quota ? "QUOTA" : transient ? "BUSY" : "RETRY",
+      note,
       error: message,
     });
     const released = projectsRepository.releaseReservation(
@@ -517,12 +510,16 @@ export async function buildNext(
       message,
       retryAt,
     );
-    if (released && transient) {
+    if (released && !terminal && transient) {
       projectsRepository.setStatus(project.id, "queued", {
-        agentNote: "BUSY",
+        agentNote: timedOut ? "TIMEOUT" : "BUSY",
         retryAt,
       });
-      projectsRepository.event(project.id, "agent.busy", "MODEL BUSY");
+      projectsRepository.event(
+        project.id,
+        timedOut ? "agent.timeout" : "agent.busy",
+        timedOut ? "MODEL REQUEST TIMED OUT" : "MODEL BUSY",
+      );
     } else if (released) {
       projectsRepository.event(
         project.id,

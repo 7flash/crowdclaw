@@ -273,7 +273,7 @@ async function tick(): Promise<boolean> {
   if (project.retryAt && project.retryAt > Date.now()) return false;
   const next = project.milestones[project.done];
   if (!next) return false;
-  if (project.availableCredits < next.costCredits) {
+  if (!projectsRepository.hasBuildRunway(project.id)) {
     projectsRepository.setStatus(project.id, "waiting_funds", {
       agentNote: "WAITING",
       retryAt: 0,

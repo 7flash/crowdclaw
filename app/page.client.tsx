@@ -45,6 +45,18 @@ export default function mount() {
     fallbackPoll = null;
   };
 
+  const updatePlanningClock = () => {
+    const project = state.planningProject;
+    const text =
+      project && project.status === "planning"
+        ? `${Math.max(0, Math.floor((Date.now() - project.createdAt) / 1000))}s`
+        : "";
+    root.querySelectorAll("[data-plan-clock]").forEach((node) => {
+      (node as HTMLElement).textContent = text;
+    });
+  };
+  const planningClockTimer = setInterval(updatePlanningClock, 1000);
+
   const stopPlanningStream = () => {
     planningSource?.close();
     planningSource = null;
@@ -120,6 +132,7 @@ export default function mount() {
     ];
     state.error = null;
     draw();
+    updatePlanningClock();
     if (bundle.project.status === "failed") {
       stopPlanningStream();
       return;
@@ -184,6 +197,7 @@ export default function mount() {
         ...state.projects.filter((item) => item.id !== project.id),
       ];
       draw();
+      updatePlanningClock();
       connectPlanningStream(project.id);
       void refreshPlanning();
     } catch (error) {

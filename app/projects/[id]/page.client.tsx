@@ -81,7 +81,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
       next.project.streamPreview !== previous.project.streamPreview;
     const wroteIndex =
       previewChanged &&
-      /(?:^|\n)WRITE index\.html(?:\n|$)/.test(next.project.streamPreview);
+      /(?:^|\n)WRITE game\.tsx(?:\n|$)/.test(next.project.streamPreview);
     const artifactAdded = next.artifacts.length > previousArtifactCount;
     const statusChanged = next.project.status !== previous.project.status;
     const balanceChanged =
@@ -97,6 +97,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
       if (state.tab === "code") void loadCurrentCode();
     }
     draw();
+    updateRunClock();
     animateProjectChange({
       previewChanged,
       wroteIndex,
@@ -223,7 +224,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
         );
       }
       if (change.previewChanged) {
-        root.querySelector(".cc-cinema-current")?.animate(
+        root.querySelector(".cc-activity-current")?.animate(
           [
             { transform: "translateX(-10px)", opacity: 0 },
             { transform: "translateX(0)", opacity: 1 },
@@ -308,10 +309,25 @@ export default function mount({ params }: { params: Record<string, string> }) {
     const run = state.bundle.runs.find(
       (item) => item.status === "running" && item.kind === "build",
     );
-    const text = run
-      ? `${Math.max(0, Math.floor((Date.now() - run.startedAt) / 1000))}s`
-      : "";
-    root.querySelectorAll("[data-run-clock]").forEach((node) => {
+    const project = state.bundle.project;
+    let text = "";
+    if (run) {
+      const elapsed = Math.max(
+        0,
+        Math.floor((Date.now() - run.startedAt) / 1000),
+      );
+      text =
+        elapsed < 60
+          ? `${elapsed}s`
+          : `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, "0")}s`;
+    } else if (project.status === "queued" && project.retryAt > Date.now()) {
+      const seconds = Math.max(
+        1,
+        Math.ceil((project.retryAt - Date.now()) / 1000),
+      );
+      text = `retry ${seconds}s`;
+    }
+    root.querySelectorAll("[data-stage-clock]").forEach((node) => {
       (node as HTMLElement).textContent = text;
     });
   };

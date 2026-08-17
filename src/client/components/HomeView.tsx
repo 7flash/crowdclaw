@@ -24,14 +24,10 @@ export function HomeView(props: HomeViewProps) {
       >
         {!planning ? (
           <section className="cc-rise pt-[78px] pb-[30px] text-center">
-            <h1 className="font-display m-0 mb-5 text-[clamp(2.7rem,8vw,4.8rem)] font-extrabold leading-[.88] tracking-[-.025em]">
+            <h1 className="font-display m-0 mb-8 text-[clamp(2.7rem,8vw,4.8rem)] font-extrabold leading-[.88] tracking-[-.025em]">
               Describe your{" "}
-              <em className="not-italic text-[var(--claw)]">Idea</em>.<br />
-              Agent keeps building it.
+              <em className="not-italic text-[var(--claw)]">Idea</em>.
             </h1>
-            <p className="mx-auto mb-8 max-w-[520px] text-[14px] leading-6 text-[var(--dim)]">
-              Anyone can fund it. Supporters steer what it builds next.
-            </p>
 
             <div className="cc-box text-left">
               <textarea
@@ -121,8 +117,6 @@ export function HomeView(props: HomeViewProps) {
 function Planning({
   project,
   idea,
-  creating,
-  lamportsPerCredit,
 }: {
   project: Project | null;
   idea: string;
@@ -130,133 +124,101 @@ function Planning({
   lamportsPerCredit: number;
 }) {
   const preview = parsePlan(project?.streamPreview || "");
+  const prompt = (project?.idea || idea).trim();
   const name =
     preview.name ||
     (project && project.name !== "new-project" ? project.name : "");
-  const summary =
-    preview.summary ||
-    (project && project.name !== "new-project" ? project.summary : "");
-  const thought = preview.thought;
   const milestones = preview.milestones.length
     ? preview.milestones
     : project?.milestones || [];
   const ready = Boolean(
     project && project.milestones.length === 3 && project.status !== "planning",
   );
-  const stage = planStage({
-    project,
-    creating,
-    name,
-    summary,
-    milestones: milestones.length,
-  });
+  const error =
+    project?.status === "failed"
+      ? publicErrorLabel(project.error || project.agentNote)
+      : project?.error && !project.currentRunId
+        ? publicErrorLabel(project.error)
+        : "";
+  const runtimeProgress =
+    project?.status === "planning"
+      ? visibleRuntimeProgress(project.agentNote)
+      : "";
 
   return (
     <div className="cc-project-transition cc-plan-shell text-left">
-      <div className="cc-plan-idea">{project?.idea || idea}</div>
-
-      <div className="cc-plan-state">
-        <span className="cc-plan-signal" aria-hidden="true" />
-        <span key={stage} className="cc-fade">
-          {stage}
-        </span>
-        {project?.agentId ? (
-          <span className="ml-auto text-[var(--dimmer)]">
-            {project.agentId}
-          </span>
-        ) : null}
-      </div>
-      {!ready ? (
-        <div className="cc-plan-motion" aria-hidden="true">
-          <i />
+      {prompt ? (
+        <div className="max-w-[620px] border-l border-[var(--claw)] pl-4 text-[15px] leading-7 text-[var(--bone)]">
+          {prompt}
         </div>
       ) : null}
 
-      <div className="mt-8 min-h-[58px]">
-        {name ? (
-          <div className="cc-project-title font-display cc-fade text-[clamp(2.35rem,8vw,3.55rem)] font-extrabold uppercase leading-none">
-            {name}
+      {error ? (
+        <div className="mt-6 font-data text-[10px] uppercase tracking-[.14em] text-[var(--claw)]">
+          {error}
+        </div>
+      ) : !ready ? (
+        <div className="mt-8">
+          <div
+            className="grid grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-3"
+            aria-label="Planning in progress"
+          >
+            <span className="cc-plan-signal" aria-hidden="true" />
+            <span className="font-data text-[9px] uppercase tracking-[.16em] text-[var(--dim)]">
+              PLANNING
+            </span>
+            <div className="cc-plan-motion min-w-0" aria-hidden="true">
+              <i />
+            </div>
+            <span
+              data-plan-clock
+              className="font-data text-[9px] text-[var(--dimmer)]"
+            />
           </div>
-        ) : null}
-      </div>
-
-      {thought ? (
-        <div className="cc-plan-thought cc-fade">{thought}</div>
-      ) : null}
-      {summary ? (
-        <div className="cc-fade mt-2 max-w-[600px] text-[13px] leading-5 text-[var(--dim)]">
-          {summary}
+          {runtimeProgress ? (
+            <div className="cc-fade mt-3 truncate pl-[30px] font-data text-[9px] text-[var(--dimmer)]">
+              {runtimeProgress}
+            </div>
+          ) : null}
         </div>
       ) : null}
 
-      <div className="mt-7 grid gap-[6px]">
-        {[0, 1, 2].map((index) => {
-          const milestone = milestones[index];
-          if (!milestone) {
-            return (
-              <div key={index} className="cc-plan-row-empty">
-                <span>{index + 1}</span>
-                <i />
-              </div>
-            );
-          }
-          return (
+      {name ? (
+        <div className="cc-project-title font-display cc-fade mt-10 text-[clamp(2.45rem,8vw,3.7rem)] font-extrabold uppercase leading-none">
+          {name}
+        </div>
+      ) : null}
+
+      {milestones.length ? (
+        <div className="mt-7 grid gap-[6px]">
+          {milestones.slice(0, 3).map((milestone, index) => (
             <div
               key={`${milestone.title}-${index}`}
-              className={`cc-milestone cc-fade ${index === 0 ? "cc-next" : "opacity-60"}`}
+              className="cc-milestone cc-fade"
             >
               <span className="font-data text-[10px] text-[var(--dimmer)]">
                 {index + 1}
               </span>
               <span className="text-sm leading-[1.35]">{milestone.title}</span>
-              <span className="font-data text-[10px] text-[var(--dimmer)]">
-                {(
-                  (milestone.costCredits * lamportsPerCredit) /
-                  SOL_LAMPORTS
-                ).toFixed(4)}{" "}
-                SOL
-              </span>
+              <span aria-hidden="true" />
             </div>
-          );
-        })}
-      </div>
+          ))}
+        </div>
+      ) : null}
 
       {ready && project ? (
-        <div className="cc-plan-ready cc-fade">
-          <span className="font-data text-[10px] tracking-[.16em] text-[var(--mint)]">
-            READY
-          </span>
-          <a
-            id="crowdclaw-created-project-link"
-            className="cc-btn no-underline"
-            href={`/projects/${encodeURIComponent(project.id)}`}
-          >
-            OPEN →
-          </a>
-        </div>
+        <a
+          id="crowdclaw-created-project-link"
+          className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0"
+          href={`/projects/${encodeURIComponent(project.id)}`}
+          aria-hidden="true"
+          tabIndex={-1}
+        >
+          OPEN
+        </a>
       ) : null}
     </div>
   );
-}
-
-function planStage(input: {
-  project: Project | null;
-  creating: boolean;
-  name: string;
-  summary: string;
-  milestones: number;
-}): string {
-  if (!input.project) return input.creating ? "ASSIGNING" : "READY";
-  if (input.project.status === "planning" && input.project.retryAt > Date.now())
-    return input.project.agentNote || "BUSY";
-  if (input.project.status === "failed")
-    return publicErrorLabel(input.project.error || input.project.agentNote);
-  if (input.project.error && !input.project.currentRunId)
-    return publicErrorLabel(input.project.error);
-  if (input.milestones >= 3) return "READY";
-  if (input.milestones > 0) return `${input.milestones} / 3`;
-  if (input.summary || input.name) return "PLAN";
-  return input.project.currentRunId ? "THINKING" : "ASSIGNING";
 }
 
 function parsePlan(text: string): {
@@ -297,10 +259,23 @@ function parsePlan(text: string): {
   return { thought, name, summary, milestones };
 }
 
-function shortStatus(status: Project["status"]): string {
-  if (status === "seeding") return "FUNDING";
-  if (status === "waiting_funds") return "WAITING";
+function visibleRuntimeProgress(value: string): string {
+  const message = value.replace(/\s+/g, " ").trim();
+  if (!message) return "";
   if (
+    /^(?:THINKING|PLAN|NAME|LOOP|DONE|READY|BUILDING|MODEL RUNNING)$/i.test(
+      message,
+    )
+  )
+    return "";
+  return message.slice(0, 160);
+}
+
+function shortStatus(status: Project["status"]): string {
+  if (status === "seeding") return "STARTING";
+  if (status === "waiting_funds") return "PAUSED";
+  if (
+    status === "queued" ||
     status === "working" ||
     status === "validating" ||
     status === "publishing"

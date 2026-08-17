@@ -174,6 +174,7 @@ export type UsageSummary = {
   latestContextTokens: number;
   contextWindow: number;
   remainingContextTokens: number;
+  usdEstimate: number;
 };
 
 export type ProjectBundle = {

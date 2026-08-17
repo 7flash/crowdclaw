@@ -10,6 +10,8 @@ export async function GET(
   const artifact = projectsRepository.artifact(params.projectId, version);
   if (!artifact) return new Response("artifact not found", { status: 404 });
 
+  const url = new URL(request.url);
+  const download = url.searchParams.get("download") === "1";
   const etag = `"sha256-${artifact.sha256}"`;
   if (request.headers.get("if-none-match") === etag) {
     return new Response(null, {
@@ -34,6 +36,11 @@ export async function GET(
       "permissions-policy":
         "camera=(), microphone=(), geolocation=(), payment=()",
       "cross-origin-resource-policy": "same-origin",
+      ...(download
+        ? {
+            "content-disposition": `attachment; filename="${params.projectId}-v${version}.html"`,
+          }
+        : {}),
     },
   });
 }

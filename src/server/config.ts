@@ -11,6 +11,10 @@ export function lamportsPerCredit(): number {
   return positiveInt("LAMPORTS_PER_CREDIT", 100_000);
 }
 
+export function projectFloatCredits(): number {
+  return positiveInt("PROJECT_FLOAT_CREDITS", 12, 0);
+}
+
 export function modelName(): string {
   return process.env.GAME_MODEL?.trim() || "gemini-3-flash-preview";
 }

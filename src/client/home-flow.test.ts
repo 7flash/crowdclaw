@@ -38,8 +38,6 @@ describe("first release handoff", () => {
   });
 
   test("publishes real activity before the first model response", () => {
-    expect(agent).toContain('activityText = "OPEN WORKSPACE\\n"');
-    expect(agent).toContain('note: "OPEN WORKSPACE"');
     expect(agent).toContain('note: "FILES"');
   });
 });

@@ -2,6 +2,7 @@
 import { md, runAgent } from "jsx-ai";
 import type {
   AgentContext,
+  AgentEvent,
   AgentRunResult,
   AgentUsage as JsxAgentUsage,
   CanonicalToolCall,
@@ -23,10 +24,15 @@ import {
 import type { Milestone, Project, Steering } from "../../shared/types";
 import { validateArtifactHtml } from "./output";
 import {
-  ensureWorkspaceIndex,
-  readWorkspaceIndex,
+  ensureWorkspaceGameSource,
+  readWorkspaceGameSource,
   writeWorkspaceFile,
 } from "./workspace";
+import {
+  compileGameHtml,
+  extractGameSource,
+  validateGameSource,
+} from "./game-artifact";
 
 const STRATEGY = "hybrid" as const;
 const MODEL = () => modelName();
@@ -46,24 +52,32 @@ Submit the complete plan through submit_game_plan. Do not answer in a custom tex
 
 export const BUILD_SYS_SOURCE = `You are an autonomous browser-game engineer producing one complete browser-game revision.
 
-The user message contains the complete current index.html, so do not spend a model turn inspecting files.
+The user message contains the complete current game implementation, so do not spend a model turn inspecting files.
 In this single model turn, call tools in this order:
 1. public_status with a concrete 2-8 word public update.
-2. write_file for index.html with the complete revised document.
+2. write_file for game.tsx with the complete revised source.
 3. complete_milestone.
 
-Artifact contract:
-- index.html must be a complete self-contained HTML document.
-- Plain HTML/CSS/JavaScript; no build step.
-- No external scripts, fonts, images, imports, CDNs, fetches, websockets, or network requests.
+Source contract:
+- game.tsx must import render from "tradjs/client".
+- Default-export function mount(). It renders the complete game into #game-root and returns a cleanup function that renders null.
+- Keep the game self-contained in this one TSX source file; CrowdClaw bundles tradjs/client into the published standalone HTML.
+- No external scripts, fonts, images, imports other than tradjs/client, CDNs, fetches, websockets, or network requests.
 - No localStorage, sessionStorage, or IndexedDB.
 - Fill the frame and keep the game responsive.
 - Support keyboard and pointer input and show controls on screen.
 - Include a real game loop, score or win/lose state, and restart without a reload.
 - Preserve strong existing gameplay and materially implement the requested milestone.
+- Keep game.tsx compact. Prefer simple mechanics and concise implementation over large abstractions; aim to stay under roughly 450 lines.
 
-Tool calls are executed in order. complete_milestone validates the file written earlier in the same response.
+Tool calls are executed in order. complete_milestone compiles and validates game.tsx written earlier in the same response.
 The public_status is intentionally public; it is not private chain-of-thought.`;
+
+export const BUILD_BRIEF_SYS_SOURCE = `You are preparing a tiny public progress log for a browser-game build.
+
+Publish exactly three short implementation notes through publish_build_brief.
+Each note must be a concrete 2-7 word action a viewer can understand, such as "Shape the pickup loop" or "Tune delivery feedback".
+These are public progress summaries, not private chain-of-thought. Do not write code in this turn.`;
 
 export type AgentUsage = {
   inputTokens: number;
@@ -103,6 +117,7 @@ export type PlanResult = {
 
 export type BuildPhaseResult = {
   html: string;
+  source: string;
   summary: string;
   nextMilestone: { title: string; goal: string; costCredits: number };
   usage: AgentUsage;
@@ -113,6 +128,7 @@ export type BuildPhaseResult = {
 type PlanningState = { plan?: GamePlan; validationError?: string };
 type CompletionState = {
   validationError?: string;
+  compiledHtml?: string;
   completion?: {
     summary: string;
     nextMilestone: string;
@@ -163,6 +179,29 @@ const PLAN_SCHEMA: ToolParametersSchema = {
   required: ["slug", "summary", "note", "milestones"],
 };
 
+const BUILD_BRIEF_SCHEMA: ToolParametersSchema = {
+  type: "object",
+  properties: {
+    notes: {
+      type: "array",
+      description: "Three short public implementation notes",
+      items: { type: "string" },
+    },
+  },
+  required: ["notes"],
+};
+
+type BuildBriefState = { notes?: string[] };
+type BuildBriefResult = { notes: string[]; usage: AgentUsage };
+
+const BuildBriefTool = () => (
+  <tool
+    name="publish_build_brief"
+    description="Publish three short public implementation notes before coding"
+    schema={BUILD_BRIEF_SCHEMA}
+  />
+);
+
 const COMPLETE_SCHEMA: ToolParametersSchema = {
   type: "object",
   properties: {
@@ -207,10 +246,10 @@ const WorkspaceTools = () => (
     </tool>
     <tool
       name="write_file"
-      description="Replace the complete index.html browser game"
+      description="Replace the complete game.tsx TradJS browser game"
     >
       <param name="path" type="string" required>
-        Must be index.html
+        Must be game.tsx
       </param>
       <param name="content" type="string" required>
         Complete file contents
@@ -218,7 +257,7 @@ const WorkspaceTools = () => (
     </tool>
     <tool
       name="complete_milestone"
-      description="Accept the milestone after the index.html written earlier in this response passes host validation"
+      description="Accept the milestone after game.tsx compiles into a standalone HTML artifact and passes host validation"
       schema={COMPLETE_SCHEMA}
     />
   </>
@@ -257,6 +296,25 @@ function PlanningPrompt({ history }: { history: readonly ExtractedMessage[] }) {
   );
 }
 
+function BuildBriefPrompt({
+  history,
+}: {
+  history: readonly ExtractedMessage[];
+}) {
+  return (
+    <prompt
+      model={MODEL()}
+      strategy={STRATEGY}
+      temperature={TEMPERATURE()}
+      maxTokens={420}
+    >
+      <system>{md`${BUILD_BRIEF_SYS_SOURCE}`}</system>
+      <BuildBriefTool />
+      <Conversation history={history} />
+    </prompt>
+  );
+}
+
 function MilestonePrompt({
   history,
 }: {
@@ -267,7 +325,7 @@ function MilestonePrompt({
       model={MODEL()}
       strategy={STRATEGY}
       temperature={TEMPERATURE()}
-      maxTokens={agentMaxTokens()}
+      maxTokens={Math.min(agentMaxTokens(), 8_000)}
     >
       <system>{md`${BUILD_SYS_SOURCE}`}</system>
       <WorkspaceTools />
@@ -452,6 +510,20 @@ function usageFromAgent(usage: JsxAgentUsage | undefined): AgentUsage {
   };
 }
 
+function mergeUsage(a: AgentUsage, b: AgentUsage): AgentUsage {
+  return {
+    inputTokens: a.inputTokens + b.inputTokens,
+    outputTokens: a.outputTokens + b.outputTokens,
+    thinkingTokens: a.thinkingTokens + b.thinkingTokens,
+    cacheCreationInputTokens:
+      a.cacheCreationInputTokens + b.cacheCreationInputTokens,
+    cacheReadInputTokens: a.cacheReadInputTokens + b.cacheReadInputTokens,
+    lastContextTokens: Math.max(a.lastContextTokens, b.lastContextTokens),
+    contextWindow: Math.max(a.contextWindow, b.contextWindow),
+    estimated: a.estimated || b.estimated,
+  };
+}
+
 function toolResult(
   call: CanonicalToolCall,
   content: string,
@@ -488,6 +560,72 @@ function executePlanningTool(
   }
 }
 
+function normalizePublicNote(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return compactWords(value, 7, 100);
+}
+
+async function buildPublicBrief(
+  project: Project,
+  milestone: Milestone,
+): Promise<BuildBriefResult> {
+  const state: BuildBriefState = {};
+  const prompt = md`
+    GAME: ${project.summary || project.idea}
+    MILESTONE ${project.done + 1}: ${milestone.title}
+    ${milestone.goal ? `GOAL: ${milestone.goal}` : ""}
+  `;
+
+  try {
+    const result = await measure(
+      {
+        start: () => "Public build brief",
+        end: summarizeAgentRun,
+        projectId: project.id,
+        milestone: project.done + 1,
+      },
+      () =>
+        runAgent({
+          state,
+          history: [{ role: "user", content: prompt }],
+          buildPrompt: (history) => <BuildBriefPrompt history={history} />,
+          executeTool: async (call, context) => {
+            if (call.name !== "publish_build_brief")
+              return toolResult(call, `Unknown brief tool: ${call.name}`, true);
+            const raw = Array.isArray(call.args.notes) ? call.args.notes : [];
+            const notes = raw
+              .map(normalizePublicNote)
+              .filter(Boolean)
+              .slice(0, 3);
+            if (!notes.length)
+              return toolResult(call, "No usable public notes", true);
+            context.state.notes = notes;
+            return toolResult(call, `Published ${notes.length} public notes.`);
+          },
+          callOptions: {
+            model: MODEL(),
+            strategy: STRATEGY,
+            ...(jsxAiRuntime() ? { runtime: jsxAiRuntime() } : {}),
+            retries: 0,
+            timeoutMs: Math.min(buildRequestTimeoutMs(), 35_000),
+          },
+          maxSteps: 1,
+          maxToolCalls: 1,
+          isComplete: (_response, _toolResults, context) =>
+            Boolean(context.state.notes?.length),
+        }),
+    );
+    return {
+      notes: result.reason === "completed" ? state.notes || [] : [],
+      usage: usageFromAgent(result.usage),
+    };
+  } catch {
+    // A progress brief is optional observability. Never fail a funded build because
+    // the tiny public-status request was unavailable.
+    return { notes: [], usage: blankUsage() };
+  }
+}
+
 function publicStatus(raw: JsonValue | undefined): string {
   const words = asString(raw, "text")
     .replace(/\s+/g, " ")
@@ -498,11 +636,11 @@ function publicStatus(raw: JsonValue | undefined): string {
   return words.join(" ").slice(0, 100);
 }
 
-function executeWorkspaceTool(
+async function executeWorkspaceTool(
   projectId: string,
   call: CanonicalToolCall,
   context: AgentContext<CompletionState>,
-): { message: ExtractedMessage; note: string } {
+): Promise<{ message: ExtractedMessage; note: string }> {
   try {
     switch (call.name) {
       case "public_status": {
@@ -511,16 +649,18 @@ function executeWorkspaceTool(
       }
       case "write_file": {
         const path = asString(call.args.path, "path");
-        if (path.replaceAll("\\", "/") !== "index.html")
-          throw new Error("write_file only accepts index.html");
+        if (path.replaceAll("\\", "/") !== "game.tsx")
+          throw new Error("write_file only accepts game.tsx");
         const content = asString(call.args.content, "content");
-        writeWorkspaceFile(projectId, "index.html", content);
+        const issues = validateGameSource(content);
+        if (issues.length) throw new Error(issues.join("; "));
+        writeWorkspaceFile(projectId, "game.tsx", content);
         return {
           message: toolResult(
             call,
-            `Wrote index.html (${content.length} chars).`,
+            `Wrote game.tsx (${content.length} chars).`,
           ),
-          note: "WRITE index.html",
+          note: "WRITE game.tsx",
         };
       }
       case "complete_milestone": {
@@ -536,7 +676,8 @@ function executeWorkspaceTool(
         if (nextCost < 1 || nextCost > 4)
           throw new Error("next_cost must be between 1 and 4");
         const nextGoal = asString(call.args.next_goal, "next_goal");
-        const html = readWorkspaceIndex(projectId);
+        const source = readWorkspaceGameSource(projectId);
+        const html = await compileGameHtml(source);
         const issues = validateArtifactHtml(html);
         if (issues.length) {
           context.state.validationError = issues.join("; ");
@@ -546,10 +687,11 @@ function executeWorkspaceTool(
               `Completion rejected: ${issues.join("; ")}`,
               true,
             ),
-            note: "FIX index.html",
+            note: "FIX game.tsx",
           };
         }
         context.state.validationError = undefined;
+        context.state.compiledHtml = html;
         context.state.completion = {
           summary,
           nextMilestone,
@@ -604,12 +746,34 @@ function summarizeToolMessage(message: ExtractedMessage) {
   };
 }
 
+function publicRuntimeProgress(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const message = value.replace(/\s+/g, " ").trim();
+  if (!message || /^(?:thinking|codex turn started)$/i.test(message)) return "";
+  return message.slice(0, 160);
+}
+
+function effectiveBuildTimeoutMs(project: Project): number {
+  // A full game.tsx arrives as one buffered Codex tool-call payload. 150s was
+  // repeatedly expiring just before useful model_end output arrived. Give the
+  // first attempt a little more room, then grow the window on actual retries
+  // instead of retrying forever with the exact same doomed timeout.
+  const base = Math.max(180_000, buildRequestTimeoutMs());
+  const retryBoost = Math.min(
+    180_000,
+    Math.max(0, project.failureCount) * 60_000,
+  );
+  return Math.min(
+    base + retryBoost,
+    Math.max(180_000, agentMaxDurationMs() - 15_000),
+  );
+}
+
 export async function planGame(
   idea: string,
   onNote?: (note: string) => void,
 ): Promise<PlanResult> {
   const state: PlanningState = {};
-  onNote?.("THINKING");
   const result = await measure(
     {
       start: () => "jsx-ai planning agent",
@@ -645,6 +809,18 @@ export async function planGame(
         maxToolCalls: PLAN_MAX_TOOL_CALLS,
         isComplete: (_response, _toolResults, context) =>
           Boolean(context.state.plan),
+        onEvent: (event: AgentEvent<PlanningState>) => {
+          if (event.type === "model_start") {
+            onNote?.("Model running");
+            return;
+          }
+          if (event.type === "runtime_progress") {
+            const message = publicRuntimeProgress(event.progress.message);
+            if (message) onNote?.(message);
+            return;
+          }
+          if (event.type === "model_end") onNote?.("Finalizing plan");
+        },
       }),
   );
 
@@ -666,10 +842,11 @@ export async function buildMilestone(
   steering: Steering[],
   onActivity: (activity: AgentActivity) => void,
 ): Promise<BuildPhaseResult> {
-  ensureWorkspaceIndex(project.id, previousHtml);
-  let currentHtml = previousHtml || "";
+  const previousSource = extractGameSource(previousHtml || "");
+  ensureWorkspaceGameSource(project.id, previousSource);
+  let currentSource = previousSource;
   try {
-    currentHtml = readWorkspaceIndex(project.id);
+    currentSource = readWorkspaceGameSource(project.id);
   } catch {}
 
   const previousFeedback =
@@ -690,18 +867,28 @@ export async function buildMilestone(
         : ""
     }
 
-    CURRENT INDEX.HTML:
-    \`\`\`html
-    ${currentHtml || "<!-- empty first release -->"}
-    \`\`\`
+    CURRENT IMPLEMENTATION:
+    ${currentSource ? `\`\`\`tsx\n${currentSource}\n\`\`\`` : previousHtml ? `Legacy standalone HTML follows. Preserve its strongest gameplay while rewriting it as the required TradJS game.tsx:\n\`\`\`html\n${previousHtml.slice(0, 180000)}\n\`\`\`` : "No previous implementation; create v1 from scratch."}
 
-    Produce the complete revised index.html now. Use one public_status, then write_file, then complete_milestone in this same response.
+    Produce the complete revised game.tsx now. Use one public_status, then write_file, then complete_milestone in this same response.
   `;
 
   const state: CompletionState = {};
-  let activityText = "CODING\n";
+  let activityText = "";
   let liveUsage = blankUsage();
-  onActivity({ text: activityText, note: "CODING", usage: liveUsage });
+  let lastProgressNote = "";
+
+  const pushActivity = (note: string) => {
+    const clean = note.replace(/\s+/g, " ").trim().slice(0, 160);
+    if (!clean || clean === lastProgressNote) return;
+    lastProgressNote = clean;
+    activityText += `${clean}\n`;
+    onActivity({
+      text: activityText.slice(-1800),
+      note: clean,
+      usage: liveUsage,
+    });
+  };
 
   const result = await measure(
     {
@@ -721,7 +908,9 @@ export async function buildMilestone(
           const executed = await measure(
             {
               start: () => `Tool ${call.name}`,
-              end: (value: ReturnType<typeof executeWorkspaceTool>) => ({
+              end: (
+                value: Awaited<ReturnType<typeof executeWorkspaceTool>>,
+              ) => ({
                 note: value.note,
                 ...summarizeToolMessage(value.message),
               }),
@@ -736,18 +925,38 @@ export async function buildMilestone(
             note: executed.note,
             usage: liveUsage,
           });
-          // The operations are real, but they can complete faster than the SSE snapshot
-          // cadence. Give the browser one paint window between visible tool steps.
-          if (call.name === "public_status") await Bun.sleep(260);
-          if (call.name === "write_file") await Bun.sleep(620);
           return executed.message;
+        },
+        onEvent: (event: AgentEvent<CompletionState>) => {
+          if (event.type === "model_start") {
+            pushActivity("Codex generating build");
+            return;
+          }
+          if (event.type === "runtime_progress") {
+            const message = publicRuntimeProgress(event.progress.message);
+            if (message) pushActivity(message);
+            return;
+          }
+          if (event.type === "model_end") {
+            pushActivity("Model response ready");
+            return;
+          }
+          if (event.type === "tool_start") {
+            if (event.call.name === "write_file")
+              pushActivity("Writing game.tsx");
+            else if (event.call.name === "complete_milestone")
+              pushActivity("Validating build");
+            return;
+          }
+          if (event.type === "tool_end" && event.result.isError)
+            pushActivity(`${event.call.name} failed`);
         },
         callOptions: {
           model: MODEL(),
           strategy: STRATEGY,
           ...(jsxAiRuntime() ? { runtime: jsxAiRuntime() } : {}),
           retries: 0,
-          timeoutMs: buildRequestTimeoutMs(),
+          timeoutMs: effectiveBuildTimeoutMs(project),
         },
         // One model request per build attempt. Giving the complete current HTML in
         // the prompt removes the list/read -> second-model-turn stall seen on Codex.
@@ -776,7 +985,10 @@ export async function buildMilestone(
   }
 
   return {
-    html: readWorkspaceIndex(project.id),
+    html:
+      state.compiledHtml ||
+      (await compileGameHtml(readWorkspaceGameSource(project.id))),
+    source: readWorkspaceGameSource(project.id),
     summary: state.completion.summary,
     nextMilestone: {
       title: state.completion.nextMilestone,

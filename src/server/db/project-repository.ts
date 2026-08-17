@@ -1,5 +1,10 @@
 import { db } from "./database";
-import { contextWindow, lamportsPerCredit } from "../config";
+import {
+  contextWindow,
+  lamportsPerCredit,
+  projectFloatCredits,
+} from "../config";
+import { estimateRunUsd } from "../pricing";
 import type {
   AgentRun,
   Artifact,
@@ -22,6 +27,28 @@ const round2 = (value: number) => Math.round(value * 100) / 100;
 const now = () => Date.now();
 const uid = (prefix: string) =>
   `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 9)}`;
+
+function remainingCreditsFromRow(row: any): number {
+  const creditedLamports = Math.max(
+    Number(row.creditedLamports || 0),
+    Number(row.onchainLamports || 0),
+  );
+  const onchainCredits = creditedLamports / lamportsPerCredit();
+  const fundedCredits = round2(onchainCredits + Number(row.manualCredits || 0));
+  const spentCredits = Number(row.spentCredits || 0);
+  const reservedCredits = Number(row.reservedCredits || 0);
+  return round2(fundedCredits - spentCredits - reservedCredits);
+}
+
+function canQueueMilestone(
+  project: Project,
+  milestone?: Milestone | null,
+): boolean {
+  return Boolean(
+    milestone &&
+    project.availableCredits + projectFloatCredits() >= milestone.costCredits,
+  );
+}
 
 function projectFromRow(row: any): Project {
   const creditedLamports = Math.max(
@@ -48,9 +75,7 @@ function projectFromRow(row: any): Project {
     creditedLamports,
     manualCredits: Number(row.manualCredits || 0),
     fundedCredits,
-    availableCredits: round2(
-      Math.max(0, fundedCredits - spentCredits - reservedCredits),
-    ),
+    availableCredits: remainingCreditsFromRow(row),
     currentRunId: row.currentRunId || null,
     agentNote: row.agentNote || "",
     streamPreview: row.streamPreview || "",
@@ -247,8 +272,9 @@ function usageFromRuns(runs: AgentRun[], project: Project): UsageSummary {
     project.spentCredits > 0 ? buildTokens / project.spentCredits : 0;
   const estimatedFundedTokenRunway =
     tokensPerSpentCredit > 0
-      ? project.availableCredits * tokensPerSpentCredit
+      ? Math.max(0, project.availableCredits) * tokensPerSpentCredit
       : 0;
+  const usdEstimate = runs.reduce((sum, run) => sum + estimateRunUsd(run), 0);
   const latest = runs[0];
   const window = latest?.contextWindow || contextWindow();
   const latestContextTokens = latest?.lastContextTokens || 0;
@@ -263,6 +289,7 @@ function usageFromRuns(runs: AgentRun[], project: Project): UsageSummary {
     latestContextTokens,
     contextWindow: window,
     remainingContextTokens: Math.max(0, window - latestContextTokens),
+    usdEstimate,
   };
 }
 
@@ -279,6 +306,13 @@ export const projectsRepository = {
   get(projectId: string): Project | null {
     const row = rowByProjectId(projectId);
     return row ? projectFromRow(row) : null;
+  },
+
+  hasBuildRunway(projectId: string): boolean {
+    const row = rowByProjectId(projectId);
+    if (!row) return false;
+    const project = projectFromRow(row);
+    return canQueueMilestone(project, project.milestones[project.done]);
   },
 
   bundle(projectId: string): ProjectBundle | null {
@@ -459,7 +493,6 @@ export const projectsRepository = {
       row.done = 0;
       row.reservedCredits = 0;
       row.currentRunId = null;
-      row.agentNote = "FUNDING";
       // Keep the planning preview until the next live agent/build update so the
       // project-page handoff can show the planner's explicit public note.
       row.error = "";
@@ -467,10 +500,8 @@ export const projectsRepository = {
       row.retryAt = 0;
       const project = projectFromRow(row);
       const next = project.milestones[0];
-      row.status =
-        next && project.availableCredits >= next.costCredits
-          ? "queued"
-          : "seeding";
+      row.status = canQueueMilestone(project, next) ? "queued" : "seeding";
+      row.agentNote = row.status === "queued" ? "READY" : "FUNDING";
       row.updatedAt = now();
       run.status = "complete";
       run.finishedAt = now();
@@ -589,7 +620,7 @@ export const projectsRepository = {
       // that as roadmap exhaustion would complete it before the planner can run.
       if (project.status === "waiting_funds" || project.status === "seeding") {
         const next = project.milestones[project.done];
-        if (next && project.availableCredits >= next.costCredits) {
+        if (canQueueMilestone(project, next)) {
           row.status = "queued";
           row.agentNote = "READY";
           row.error = "";
@@ -619,8 +650,8 @@ export const projectsRepository = {
       const project = projectFromRow(row);
       const next = project.milestones[expectedDone];
       if (!next) throw new Error("no next milestone");
-      if (project.availableCredits < next.costCredits)
-        throw new Error("milestone is not funded");
+      if (!canQueueMilestone(project, next))
+        throw new Error("milestone is paused for funding");
       const miles = [...project.milestones];
       miles[expectedDone] = { ...next, state: "working" };
       row.milestones = miles;
@@ -737,7 +768,7 @@ export const projectsRepository = {
       const next = updated.milestones[updated.done];
       row.status = !next
         ? "completed"
-        : updated.availableCredits >= next.costCredits
+        : canQueueMilestone(updated, next)
           ? "queued"
           : "waiting_funds";
       row.updatedAt = now();
@@ -771,7 +802,8 @@ export const projectsRepository = {
       row.status = status;
       row.error = error.slice(0, 500);
       row.agentNote = status === "failed" ? "STOPPED" : "RETRY";
-      row.streamPreview = "";
+      // Keep the last public runtime/build activity visible while a retry is
+      // waiting. Clearing it made a timed-out build look like a frozen blank UI.
       row.failureCount = Number(row.failureCount || 0) + 1;
       row.retryAt = retryAt;
       row.updatedAt = now();
