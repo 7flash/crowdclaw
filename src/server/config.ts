@@ -3,8 +3,9 @@ function positiveInt(name: string, fallback: number, minimum = 1): number {
   return Number.isFinite(parsed) && parsed >= minimum ? parsed : fallback;
 }
 
-export type AgentProvider =
-  "gemini" | "openai" | "anthropic" | "deepseek" | "custom";
+export function jsxAiRuntime(): string {
+  return process.env.JSX_AI_RUNTIME?.trim().toLowerCase() || "";
+}
 
 export function lamportsPerCredit(): number {
   return positiveInt("LAMPORTS_PER_CREDIT", 10_000_000);
@@ -12,15 +13,6 @@ export function lamportsPerCredit(): number {
 
 export function modelName(): string {
   return process.env.GAME_MODEL?.trim() || "gemini-3-flash-preview";
-}
-
-export function modelProvider(model = modelName()): AgentProvider {
-  const value = model.toLowerCase();
-  if (value.startsWith("gemini-")) return "gemini";
-  if (value.startsWith("gpt-") || value.startsWith("o4-")) return "openai";
-  if (value.startsWith("claude-")) return "anthropic";
-  if (value.startsWith("deepseek-")) return "deepseek";
-  return "custom";
 }
 
 export function contextWindow(): number {
@@ -37,6 +29,10 @@ export function agentMaxSteps(): number {
 
 export function agentRequestTimeoutMs(): number {
   return positiveInt("AGENT_REQUEST_TIMEOUT_MS", 90_000, 5_000);
+}
+
+export function agentMaxDurationMs(): number {
+  return positiveInt("AGENT_MAX_DURATION_MS", 8 * 60_000, 30_000);
 }
 
 export function solanaRpcTimeoutMs(): number {
@@ -89,37 +85,10 @@ export function solanaRpcUrl(): string {
   );
 }
 
-function providerCredentialIssue(): string | null {
-  switch (modelProvider()) {
-    case "gemini":
-      return process.env.GEMINI_API_KEY?.trim()
-        ? null
-        : "GEMINI_API_KEY is required for Gemini models";
-    case "openai":
-      return process.env.OPENAI_API_KEY?.trim()
-        ? null
-        : "OPENAI_API_KEY is required for OpenAI models";
-    case "anthropic":
-      return process.env.ANTHROPIC_API_KEY?.trim()
-        ? null
-        : "ANTHROPIC_API_KEY is required for Anthropic models";
-    case "deepseek":
-      return process.env.DEEPSEEK_API_KEY?.trim()
-        ? null
-        : "DEEPSEEK_API_KEY is required for DeepSeek models";
-    case "custom":
-      return null;
-  }
-}
-
 export function runtimeConfigIssues(role: "web" | "worker"): string[] {
   const issues: string[] = [];
   const production = process.env.NODE_ENV === "production";
 
-  // Web creates the bgrun agent processes, so fail before accepting ideas if
-  // the selected provider cannot run in those inherited child environments.
-  const credentialIssue = providerCredentialIssue();
-  if (credentialIssue) issues.push(credentialIssue);
   if (treasurySeedEnabled() && !process.env.SLRD_MASTER_KEY?.trim()) {
     issues.push("SLRD_MASTER_KEY is required when TREASURY_SEED_ENABLED=1");
   }

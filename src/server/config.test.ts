@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   contextWindow,
+  jsxAiRuntime,
   modelName,
-  modelProvider,
   runtimeConfigIssues,
 } from "./config";
 
@@ -26,25 +26,20 @@ describe("agent model configuration", () => {
     expect(contextWindow()).toBe(1_048_576);
   });
 
-  test("detects jsx-ai providers from model names", () => {
-    expect(modelProvider("gemini-3-flash-preview")).toBe("gemini");
-    expect(modelProvider("gpt-4o")).toBe("openai");
-    expect(modelProvider("o4-mini")).toBe("openai");
-    expect(modelProvider("claude-3-sonnet-20240229")).toBe("anthropic");
-    expect(modelProvider("deepseek-chat")).toBe("deepseek");
-    expect(modelProvider("my-private-model")).toBe("custom");
-  });
-
-  test("requires the matching known-provider credential for workers", () => {
-    process.env.GAME_MODEL = "gemini-3-flash-preview";
+  test("CrowdClaw does not validate jsx-ai provider credentials", () => {
+    process.env.JSX_AI_RUNTIME = "codex";
+    process.env.GAME_MODEL = "gpt-5.4-mini";
+    delete process.env.OPENAI_API_KEY;
     delete process.env.GEMINI_API_KEY;
-    expect(runtimeConfigIssues("worker")).toContain(
-      "GEMINI_API_KEY is required for Gemini models",
-    );
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.DEEPSEEK_API_KEY;
 
-    process.env.GEMINI_API_KEY = "test-key";
-    expect(runtimeConfigIssues("worker")).not.toContain(
-      "GEMINI_API_KEY is required for Gemini models",
+    expect(jsxAiRuntime()).toBe("codex");
+    expect(runtimeConfigIssues("worker").join(" ")).not.toMatch(
+      /API_KEY|required for .* models/i,
+    );
+    expect(runtimeConfigIssues("web").join(" ")).not.toMatch(
+      /API_KEY|required for .* models/i,
     );
   });
 });

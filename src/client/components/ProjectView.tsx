@@ -1,5 +1,10 @@
 import { SOL_LAMPORTS } from "../../shared/constants";
-import type { ProjectBundle, ProjectStatus } from "../../shared/types";
+import type {
+  ProjectBundle,
+  ProjectEvent,
+  ProjectStatus,
+} from "../../shared/types";
+import { publicErrorLabel } from "../../shared/public-error";
 import type { Tab } from "../state";
 import { number, shortAddress, tokens } from "../format";
 
@@ -36,6 +41,7 @@ export function ProjectView(props: ProjectViewProps) {
     treasuryGrants,
     usage,
     lamportsPerCredit,
+    events,
   } = props.bundle;
   const latestArtifact = artifacts[artifacts.length - 1];
   const currentArtifact =
@@ -49,7 +55,9 @@ export function ProjectView(props: ProjectViewProps) {
   const upcoming = project.milestones.slice(project.done, project.done + 4);
   const active = isActive(project.status);
   const totalTokens = currentRun
-    ? currentRun.inputTokens + currentRun.outputTokens
+    ? currentRun.inputTokens +
+      currentRun.outputTokens +
+      currentRun.thinkingTokens
     : usage.totalTokens;
   const contextWindow = currentRun?.contextWindow || usage.contextWindow;
   const solBalance = project.onchainLamports / SOL_LAMPORTS;
@@ -59,14 +67,27 @@ export function ProjectView(props: ProjectViewProps) {
   );
   const nextSol = next ? creditsToSol(next.costCredits, lamportsPerCredit) : 0;
   const seed = treasuryGrants[0];
+  const visibleSeed = seed && seed.status !== "failed" ? seed : undefined;
+  const seedLamports =
+    seed?.lamports ||
+    (next ? Math.max(1, Math.ceil(next.costCredits * lamportsPerCredit)) : 0);
   const openSteering = steering
     .filter((item) => item.status === "open")
     .sort((a, b) => b.influence - a.influence);
+  const liveLines = activityLines(
+    project.streamPreview,
+    events,
+    visibleSeed,
+    artifacts.length,
+  );
   const stageHeight = currentArtifact
     ? "h-[472px] max-[800px]:h-[340px]"
     : active
-      ? "h-[250px] max-[800px]:h-[210px]"
-      : "h-[92px]";
+      ? "h-[300px] max-[800px]:h-[250px]"
+      : "h-[132px]";
+  const hasCommunity = Boolean(
+    visibleSeed || supporters.length || openSteering.length,
+  );
 
   return (
     <main className="mx-auto max-w-[920px] px-5 pb-[72px]">
@@ -88,7 +109,7 @@ export function ProjectView(props: ProjectViewProps) {
             className={`cc-dot ${active ? "cc-dot-go" : artifacts.length ? "cc-dot-on" : ""}`}
           />
           <span className="cc-label text-[var(--bone)]">
-            {statusLabel(project.status)}
+            {statusLabel(project.status, project.error)}
           </span>
           <span
             className={`ml-1 h-1.5 w-1.5 rounded-full ${props.liveState === "live" ? "bg-[var(--mint)]" : "bg-[var(--dimmer)]"}`}
@@ -146,101 +167,39 @@ export function ProjectView(props: ProjectViewProps) {
                   : "…"}
               </pre>
             )
+          ) : project.status === "seeding" ? (
+            <SeedSurface
+              seed={seed}
+              lamports={seedLamports}
+              balanceLamports={project.onchainLamports}
+              activity={liveLines}
+            />
           ) : active ? (
             <AgentSurface
               status={project.status}
               note={project.agentNote}
-              preview={project.streamPreview}
+              lines={liveLines}
             />
           ) : (
-            <div className="grid h-full place-items-center">
-              <span className="cc-label">{statusLabel(project.status)}</span>
-            </div>
+            <IdleSurface status={project.status} lines={liveLines} />
           )}
         </div>
       </section>
 
-      {project.error || props.error ? (
-        <div className="cc-agent-line text-[var(--claw)]">
-          <span>{props.error || project.error}</span>
-        </div>
-      ) : null}
-
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <section className="cc-panel cc-panel-tight">
-          <div className="flex items-center justify-between gap-3">
-            <span className="cc-label">AGENT</span>
-            <span className="font-data text-[9px] text-[var(--mint)]">
-              {project.agentId}
-            </span>
-          </div>
-          <div className="mt-3 flex items-center gap-3">
-            <div className="cc-meter flex-1">
-              <span
-                style={{
-                  width: `${Math.min(100, contextWindow ? (totalTokens / contextWindow) * 100 : 0)}%`,
-                }}
-              />
-            </div>
-            <span className="font-data whitespace-nowrap text-[9px] text-[var(--dimmer)]">
-              {tokens(totalTokens)} / {tokens(contextWindow)} TOK
-            </span>
-          </div>
-        </section>
-
-        <section className="cc-panel cc-panel-tight">
-          <div className="flex items-center justify-between gap-3">
-            <span className="cc-label">TREASURY</span>
-            <button
-              className="cc-mini"
-              onClick={props.onSyncFunding}
-              aria-label="Refresh"
-            >
-              ↻
-            </button>
-          </div>
-          <div className="mt-2 flex items-center gap-3">
-            <button
-              className="min-w-0 flex-1 truncate border-0 bg-transparent p-0 text-left font-data text-[10px] text-[var(--dimmer)]"
-              onClick={props.onCopyWallet}
-              title={project.walletAddress}
-            >
-              {shortAddress(project.walletAddress)}
-            </button>
-            <span
-              key={project.onchainLamports}
-              className="cc-balance-pop font-data text-[16px] text-[var(--bone)]"
-            >
-              {number(solBalance, 4)} SOL
-            </span>
-            <button
-              className="cc-btn cc-btn-primary"
-              onClick={props.onCopyWallet}
-            >
-              FUND
-            </button>
-          </div>
-          {next ? (
-            <div className="mt-3 flex items-center gap-3">
-              <div className="cc-meter flex-1">
-                <span
-                  style={{
-                    width: `${Math.min(100, next.costCredits ? (project.availableCredits / next.costCredits) * 100 : 0)}%`,
-                  }}
-                />
-              </div>
-              <span className="font-data whitespace-nowrap text-[9px] text-[var(--dimmer)]">
-                {number(availableSol, 3)} / {number(nextSol, 3)} SOL
-              </span>
-            </div>
-          ) : null}
-          {props.bundle.devFundingEnabled ? (
-            <button className="cc-mini mt-2" onClick={props.onDevFund}>
-              DEV +{number(creditsToSol(2, lamportsPerCredit), 3)} SOL
-            </button>
-          ) : null}
-        </section>
-      </div>
+      <LiveRail
+        agentId={project.agentId}
+        totalTokens={totalTokens}
+        contextWindow={contextWindow}
+        walletAddress={project.walletAddress}
+        solBalance={solBalance}
+        availableSol={availableSol}
+        nextSol={nextSol}
+        hasNext={Boolean(next)}
+        refreshing={props.refreshing}
+        onCopyWallet={props.onCopyWallet}
+        onSyncFunding={props.onSyncFunding}
+        onDevFund={props.bundle.devFundingEnabled ? props.onDevFund : undefined}
+      />
 
       <Roadmap
         shipped={shipped}
@@ -252,105 +211,210 @@ export function ProjectView(props: ProjectViewProps) {
         onVersion={props.onVersion}
       />
 
-      <div className="mt-6 grid gap-3 md:grid-cols-2">
-        <section className="cc-panel cc-panel-tight">
-          <div className="cc-label mb-2">SUPPORTERS</div>
-          <div className="grid">
-            {seed ? (
-              <div
-                key={`${seed.id}-${seed.status}`}
-                className={`cc-supporter-row ${seed.status === "confirmed" ? "cc-fund-arrive" : "cc-fund-pending"}`}
+      {hasCommunity ? (
+        <Community
+          seed={visibleSeed}
+          supporters={supporters}
+          openSteering={openSteering}
+          steerText={props.steerText}
+          steerAmount={props.steerAmount}
+          steering={props.steering}
+          onSteerText={props.onSteerText}
+          onSteerAmount={props.onSteerAmount}
+          onSteer={props.onSteer}
+        />
+      ) : null}
+    </main>
+  );
+}
+
+function LiveRail(props: {
+  agentId: string;
+  totalTokens: number;
+  contextWindow: number;
+  walletAddress: string;
+  solBalance: number;
+  availableSol: number;
+  nextSol: number;
+  hasNext: boolean;
+  refreshing: boolean;
+  onCopyWallet: () => void;
+  onSyncFunding: () => void;
+  onDevFund?: () => void;
+}) {
+  const tokenPercent = Math.min(
+    100,
+    props.contextWindow ? (props.totalTokens / props.contextWindow) * 100 : 0,
+  );
+  const fundPercent = Math.min(
+    100,
+    props.nextSol ? (props.availableSol / props.nextSol) * 100 : 0,
+  );
+  return (
+    <div className="cc-live-rail">
+      <div className="cc-live-cell">
+        <span className="cc-label">AGENT</span>
+        <span className="font-data text-[9px] text-[var(--mint)]">
+          {props.agentId}
+        </span>
+        <span className="cc-rail-meter">
+          <i style={{ width: `${tokenPercent}%` }} />
+        </span>
+        <span className="font-data text-[9px] text-[var(--dimmer)]">
+          {tokens(props.totalTokens)}
+        </span>
+      </div>
+      <div className="cc-live-cell">
+        <span className="cc-label">SOL</span>
+        <button
+          className="min-w-0 truncate border-0 bg-transparent p-0 text-left font-data text-[9px] text-[var(--dimmer)]"
+          onClick={props.onCopyWallet}
+          title={props.walletAddress}
+        >
+          {shortAddress(props.walletAddress)}
+        </button>
+        <span
+          key={props.solBalance}
+          className="cc-balance-pop font-data text-[13px] text-[var(--bone)]"
+        >
+          {number(props.solBalance, 4)}
+        </span>
+        <button className="cc-mini" onClick={props.onSyncFunding}>
+          {props.refreshing ? "…" : "↻"}
+        </button>
+        {props.hasNext ? (
+          <span className="cc-rail-meter">
+            <i style={{ width: `${fundPercent}%` }} />
+          </span>
+        ) : null}
+        {props.hasNext ? (
+          <span className="font-data text-[9px] text-[var(--dimmer)]">
+            {number(props.availableSol, 3)}/{number(props.nextSol, 3)}
+          </span>
+        ) : null}
+        <button
+          className="cc-mini text-[var(--claw)]"
+          onClick={props.onCopyWallet}
+        >
+          FUND
+        </button>
+        {props.onDevFund ? (
+          <button className="cc-mini" onClick={props.onDevFund}>
+            DEV
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function Community(props: {
+  seed: ProjectBundle["treasuryGrants"][number] | undefined;
+  supporters: ProjectBundle["supporters"];
+  openSteering: ProjectBundle["steering"];
+  steerText: string;
+  steerAmount: string;
+  steering: boolean;
+  onSteerText: (value: string) => void;
+  onSteerAmount: (value: string) => void;
+  onSteer: () => void;
+}) {
+  return (
+    <div className="mt-6 grid gap-3 md:grid-cols-2">
+      <section className="cc-community-block">
+        <div className="cc-section mt-0">
+          <span className="cc-label">SUPPORTERS</span>
+        </div>
+        <div className="grid">
+          {props.seed ? (
+            <div
+              key={`${props.seed.id}-${props.seed.status}`}
+              className={`cc-supporter-row ${props.seed.status === "confirmed" ? "cc-fund-arrive" : "cc-fund-pending"}`}
+            >
+              <span className="font-data text-[10px] text-[var(--bone)]">
+                CrowdClaw
+              </span>
+              <span className="font-data text-[10px]">
+                +{number(props.seed.lamports / SOL_LAMPORTS, 4)} SOL
+              </span>
+              <span className="font-data text-[9px] text-[var(--dimmer)]">
+                {props.seed.status === "confirmed" ? "✓" : "…"}
+              </span>
+            </div>
+          ) : null}
+          {props.supporters.slice(0, 8).map((supporter) => (
+            <div key={supporter.address} className="cc-supporter-row">
+              <span
+                className="truncate font-data text-[10px] text-[var(--dim)]"
+                title={supporter.address}
               >
-                <span className="font-data text-[10px] text-[var(--bone)]">
-                  CrowdClaw
-                </span>
-                <span className="font-data text-[10px]">
-                  +{number(seed.lamports / SOL_LAMPORTS, 4)} SOL
-                </span>
-                <span className="font-data text-[9px] text-[var(--dimmer)]">
-                  {seed.status === "confirmed" ? "✓" : "…"}
-                </span>
-              </div>
-            ) : null}
-            {supporters.slice(0, 8).map((supporter) => (
-              <div key={supporter.address} className="cc-supporter-row">
-                <span
-                  className="truncate font-data text-[10px] text-[var(--dim)]"
-                  title={supporter.address}
-                >
-                  {shortAddress(supporter.address)}
-                </span>
-                <span className="font-data text-[10px]">
-                  {number(supporter.donatedLamports / SOL_LAMPORTS, 4)} SOL
-                </span>
-                <span className="font-data text-[9px] text-[var(--mint)]">
-                  {number(supporter.influenceAvailable, 2)}
+                {shortAddress(supporter.address)}
+              </span>
+              <span className="font-data text-[10px]">
+                {number(supporter.donatedLamports / SOL_LAMPORTS, 4)} SOL
+              </span>
+              <span className="font-data text-[9px] text-[var(--mint)]">
+                {number(supporter.influenceAvailable, 2)}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="cc-community-block">
+        <div className="cc-section mt-0">
+          <span className="cc-label">STEER</span>
+        </div>
+        {props.openSteering.length ? (
+          <div className="mb-2 grid gap-1">
+            {props.openSteering.slice(0, 3).map((item) => (
+              <div
+                key={item.id}
+                className="grid grid-cols-[1fr_auto] gap-3 py-1.5 text-[11px]"
+              >
+                <span className="truncate">{item.instruction}</span>
+                <span className="font-data text-[var(--mint)]">
+                  {number(item.influence, 2)}
                 </span>
               </div>
             ))}
-            {!seed && !supporters.length ? (
-              <div className="font-display text-[22px] font-extrabold text-[#283840]">
-                —
-              </div>
-            ) : null}
           </div>
-        </section>
-
-        <section className="cc-panel cc-panel-tight">
-          <div className="cc-label mb-2">STEER NEXT</div>
-          {openSteering.length ? (
-            <div className="mb-2 grid gap-1.5">
-              {openSteering.slice(0, 3).map((item) => (
-                <div
-                  key={item.id}
-                  className="grid grid-cols-[1fr_auto] gap-3 border-b border-[var(--line)] py-2 text-[11px]"
-                >
-                  <span>{item.instruction}</span>
-                  <span className="font-data text-[var(--mint)]">
-                    {number(item.influence, 2)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          <div className="grid grid-cols-[1fr_68px_auto] gap-2">
-            <input
-              className="cc-input"
-              value={props.steerText}
-              maxLength={180}
-              placeholder="what next"
-              onInput={(event: Event) =>
-                props.onSteerText(
-                  (event.currentTarget as HTMLInputElement).value,
-                )
-              }
-            />
-            <input
-              className="cc-input font-data text-right"
-              value={props.steerAmount}
-              inputMode="decimal"
-              aria-label="Influence"
-              onInput={(event: Event) =>
-                props.onSteerAmount(
-                  (event.currentTarget as HTMLInputElement).value,
-                )
-              }
-            />
-            <button
-              className="cc-btn"
-              disabled={
-                props.steering ||
-                props.steerText.trim().length < 3 ||
-                !(Number(props.steerAmount) > 0)
-              }
-              onClick={props.onSteer}
-            >
-              {props.steering ? "…" : "STEER"}
-            </button>
-          </div>
-        </section>
-      </div>
-    </main>
+        ) : null}
+        <div className="grid grid-cols-[1fr_58px_auto] gap-2">
+          <input
+            className="cc-input"
+            value={props.steerText}
+            maxLength={180}
+            placeholder="what next"
+            onInput={(event: Event) =>
+              props.onSteerText((event.currentTarget as HTMLInputElement).value)
+            }
+          />
+          <input
+            className="cc-input font-data text-right"
+            value={props.steerAmount}
+            inputMode="decimal"
+            aria-label="Influence"
+            onInput={(event: Event) =>
+              props.onSteerAmount(
+                (event.currentTarget as HTMLInputElement).value,
+              )
+            }
+          />
+          <button
+            className="cc-btn"
+            disabled={
+              props.steering ||
+              props.steerText.trim().length < 3 ||
+              !(Number(props.steerAmount) > 0)
+            }
+            onClick={props.onSteer}
+          >
+            {props.steering ? "…" : "→"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -441,6 +505,7 @@ function MilestoneRow({
   active = false,
   lamportsPerCredit,
 }: {
+  key?: string;
   mile: ProjectBundle["project"]["milestones"][number];
   index: number;
   current?: boolean;
@@ -462,62 +527,199 @@ function MilestoneRow({
   );
 }
 
+function SeedSurface({
+  seed,
+  lamports,
+  balanceLamports,
+  activity,
+}: {
+  seed: ProjectBundle["treasuryGrants"][number] | undefined;
+  lamports: number;
+  balanceLamports: number;
+  activity: string[];
+}) {
+  const confirmed =
+    seed?.status === "confirmed" ||
+    (lamports > 0 && balanceLamports >= lamports);
+  const submitted = seed?.status === "submitted" || confirmed;
+  return (
+    <div className="cc-seed-surface h-full">
+      <div className="cc-seed-glow" aria-hidden="true" />
+      <div className="relative z-10 flex h-full flex-col justify-center px-7">
+        <div className="mx-auto w-full max-w-[620px]">
+          <div className="grid grid-cols-[auto_1fr_auto] items-center gap-4">
+            <span className="font-data text-[10px] uppercase tracking-[.12em] text-[var(--bone)]">
+              CrowdClaw
+            </span>
+            <span className="cc-seed-track">
+              <i
+                className={
+                  submitted
+                    ? "cc-seed-packet cc-seed-packet-sent"
+                    : "cc-seed-packet"
+                }
+              />
+            </span>
+            <span
+              key={`${seed?.status || "new"}-${lamports}`}
+              className="font-data text-[15px] text-[var(--mint)]"
+            >
+              +{number(lamports / SOL_LAMPORTS, 4)} SOL
+            </span>
+          </div>
+          <div className="mt-4">
+            <ActivityFeed
+              lines={
+                activity.length
+                  ? activity
+                  : [submitted ? "CONFIRMING" : "SIGNING"]
+              }
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AgentSurface({
   status,
   note,
-  preview,
+  lines,
 }: {
   status: ProjectStatus;
   note: string;
-  preview: string;
+  lines: string[];
 }) {
-  const lines = preview
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(-6);
+  const fallback = [note || statusLabel(status)];
   return (
     <div className="cc-agent-surface h-full">
       <div className="cc-agent-grid" aria-hidden="true" />
-      <div className="relative z-10 flex h-full flex-col justify-end px-7 py-6">
-        <div className="mb-auto flex items-center gap-3">
+      <div className="relative z-10 flex h-full flex-col px-7 py-6">
+        <div className="flex items-center gap-3">
           <span className="cc-spinner" />
           <span className="font-data text-[10px] uppercase tracking-[.14em] text-[var(--claw)]">
             {note || statusLabel(status)}
           </span>
         </div>
-        {lines.length ? (
-          <div className="grid gap-1.5 font-data text-[10px] text-[var(--dimmer)]">
-            {lines.map((line, index) => (
-              <div key={`${line}-${index}`} className="cc-activity-row">
-                <span>{line}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="grid max-w-[430px] gap-2" aria-hidden="true">
-            <span className="cc-agent-bar w-[88%]" />
-            <span className="cc-agent-bar w-[62%]" />
-            <span className="cc-agent-bar w-[76%]" />
-          </div>
-        )}
+        <div className="mt-auto max-w-[620px]">
+          <ActivityFeed lines={lines.length ? lines : fallback} />
+        </div>
       </div>
     </div>
   );
+}
+
+function IdleSurface({
+  status,
+  lines,
+}: {
+  status: ProjectStatus;
+  lines: string[];
+}) {
+  return (
+    <div className="flex h-full items-center px-7">
+      <div className="w-full">
+        <ActivityFeed lines={lines.length ? lines : [statusLabel(status)]} />
+      </div>
+    </div>
+  );
+}
+
+function ActivityFeed({ lines }: { lines: string[] }) {
+  return (
+    <div className="cc-cinema-feed">
+      {lines.slice(-6).map((line, index) => (
+        <div
+          key={`${line}-${index}`}
+          className={
+            index === Math.min(lines.length, 6) - 1
+              ? "cc-cinema-line cc-cinema-current"
+              : "cc-cinema-line"
+          }
+        >
+          <span>{line}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function activityLines(
+  preview: string,
+  events: ProjectEvent[],
+  seed: ProjectBundle["treasuryGrants"][number] | undefined,
+  artifactCount: number,
+): string[] {
+  const lines: string[] = [];
+  for (const event of [...events].reverse()) {
+    const label = eventLabel(event);
+    if (label) lines.push(label);
+  }
+  if (seed && seed.status !== "failed") {
+    const amount = number(seed.lamports / SOL_LAMPORTS, 4);
+    const state =
+      seed.status === "confirmed"
+        ? "✓"
+        : seed.status === "submitted"
+          ? "…"
+          : "→";
+    lines.push(`${state} ${amount} SOL`);
+  }
+  for (const line of preview.split(/\r?\n/)) {
+    const clean = line.trim();
+    if (!clean || /^[TSNM]\|/.test(clean)) continue;
+    lines.push(clean.replace(/^>\s*/, ""));
+  }
+  if (artifactCount && !lines.some((line) => /^V\d+\s+LIVE$/.test(line)))
+    lines.push(`V${artifactCount} LIVE`);
+  return dedupe(lines).slice(-8);
+}
+
+function eventLabel(event: ProjectEvent): string {
+  if (event.type === "wallet.created") return "WALLET";
+  if (event.type === "agent.assigned") return "AGENT";
+  if (event.type === "roadmap.planned") return "ROADMAP";
+  if (event.type === "treasury.seed.sent") return "SOL SENT";
+  if (event.type === "funding.confirmed") return "SOL ✓";
+  if (event.type === "milestone.started") return "BUILD";
+  if (event.type === "artifact.published") {
+    const match = event.message.match(/v(\d+)/i);
+    return match ? `V${match[1]} LIVE` : "LIVE";
+  }
+  if (event.type === "roadmap.rolled") return "NEXT +1";
+  if (event.type === "agent.busy") return "BUSY";
+  if (event.type === "agent.retry") return "RETRY";
+  if (
+    event.type === "agent.failed" ||
+    event.type === "agent.process.failed" ||
+    event.type === "treasury.seed.failed"
+  )
+    return "ERROR";
+  return "";
+}
+
+function dedupe(lines: string[]): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    if (!line || out[out.length - 1] === line) continue;
+    out.push(line);
+  }
+  return out;
 }
 
 function creditsToSol(credits: number, lamportsPerCredit: number): number {
   return (Math.max(0, credits) * lamportsPerCredit) / SOL_LAMPORTS;
 }
 
-function statusLabel(status: ProjectStatus): string {
+function statusLabel(status: ProjectStatus, error = ""): string {
+  if (status === "failed") return publicErrorLabel(error);
   if (status === "seeding") return "FUNDING";
   if (status === "waiting_funds") return "WAITING";
   if (status === "queued") return "STARTING";
   if (status === "working") return "BUILDING";
   if (status === "validating" || status === "publishing") return "SHIPPING";
   if (status === "completed") return "COMPLETE";
-  if (status === "failed") return "STOPPED";
   return status.toUpperCase();
 }
 

@@ -13,6 +13,7 @@ export type MilestoneState = "queued" | "working" | "shipped";
 
 export type Milestone = {
   title: string;
+  goal?: string;
   costCredits: number;
   state: MilestoneState;
   createdAt: number;
@@ -74,6 +75,7 @@ export type AgentRun = {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  thinkingTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
   lastContextTokens: number;
@@ -164,6 +166,7 @@ export type CreditLedgerEntry = {
 export type UsageSummary = {
   inputTokens: number;
   outputTokens: number;
+  thinkingTokens: number;
   totalTokens: number;
   buildTokens: number;
   tokensPerSpentCredit: number;

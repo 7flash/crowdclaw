@@ -1,20 +1,28 @@
 import { createHash } from "node:crypto";
 import { measure } from "measure-fn";
 import { buildMilestone, planGame, type AgentUsage } from "../agent/jsx-agent";
-import {
-  parseAgentOutput,
-  sealHtml,
-  toMilestone,
-  validateArtifactHtml,
-} from "../agent/output";
+import { sealHtml, toMilestone, validateArtifactHtml } from "../agent/output";
 import { modelName } from "../config";
 import { projectsRepository } from "../db/project-repository";
 import type { Project } from "../../shared/types";
+import { publicErrorLabel } from "../../shared/public-error";
 
 const MAX_FAILURES = 3;
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "agent run failed";
+  return error instanceof Error
+    ? error.message
+    : String(error || "agent run failed");
+}
+
+function isQuotaError(message: string): boolean {
+  return /(?:\b429\b|quota|rate.?limit)/i.test(message);
+}
+
+function isTransientModelError(message: string): boolean {
+  return /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error)/i.test(
+    message,
+  );
 }
 
 function backoff(failureCount: number): number {
@@ -25,6 +33,7 @@ function usagePatch(usage: AgentUsage) {
   return {
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
+    thinkingTokens: usage.thinkingTokens,
     cacheCreationInputTokens: usage.cacheCreationInputTokens,
     cacheReadInputTokens: usage.cacheReadInputTokens,
     lastContextTokens: usage.lastContextTokens,
@@ -49,6 +58,50 @@ function progressWriter(projectId: string, runId: string) {
     });
     projectsRepository.updateLiveRun(projectId, runId, preview, note);
   };
+}
+
+function planningNote(preview: string): string {
+  const lines = preview
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const milestones = lines.filter((line) => line.startsWith("M|")).length;
+  if (milestones >= 3) return "3 / 3";
+  if (milestones > 0) return `${milestones} / 3`;
+  if (lines.some((line) => line.startsWith("S|"))) return "LOOP";
+  if (lines.some((line) => line.startsWith("N|"))) return "NAME";
+  return "THINKING";
+}
+
+async function revealPlanningResult(
+  projectId: string,
+  runId: string,
+  note: string,
+  name: string,
+  summary: string,
+  milestones: Array<{ title: string; goal?: string; costCredits: number }>,
+  usage: AgentUsage,
+): Promise<string> {
+  const lines = [
+    `T|${note}`,
+    `N|${name}`,
+    `S|${summary}`,
+    ...milestones.map((item) => `M|${item.title}|${item.costCredits}`),
+  ];
+  let preview = "";
+  for (const line of lines) {
+    preview = preview ? `${preview}\n${line}` : line;
+    const liveNote = planningNote(preview);
+    projectsRepository.updateRunUsage(runId, {
+      ...usagePatch(usage),
+      streamChars: preview.length,
+      preview,
+      note: liveNote,
+    });
+    projectsRepository.updateLiveRun(projectId, runId, preview, liveNote);
+    await Bun.sleep(120);
+  }
+  return preview;
 }
 
 function heartbeat(
@@ -77,7 +130,7 @@ export async function planProject(
   });
   projectsRepository.setStatus(project.id, "planning", {
     currentRunId: run.id,
-    agentNote: "PLAN",
+    agentNote: "THINKING",
     streamPreview: "",
     error: "",
   });
@@ -91,50 +144,76 @@ export async function planProject(
   let text = "";
 
   try {
-    await measure("agent.project.plan", async () => {
-      const result = await measure("jsx-ai.plan", () =>
-        planGame(project.idea, (preview, liveUsage) => {
-          text = preview;
-          usage = liveUsage;
-          projectsRepository.updateRunUsage(run.id, {
-            ...usagePatch(liveUsage),
-            streamChars: preview.length,
-            preview,
-            note: "PLAN",
-          });
-          projectsRepository.updateLiveRun(project.id, run.id, preview, "");
+    await measure(
+      {
+        start: () => "Plan project",
+        end: () => ({
+          runId: run.id,
+          input: usage?.inputTokens || 0,
+          output: usage?.outputTokens || 0,
+          thinking: usage?.thinkingTokens || 0,
         }),
-      );
-      if (!result) throw new Error("planning returned no result");
-      text = result.text;
-      usage = result.usage;
-      projectsRepository.updateRunUsage(run.id, {
-        ...usagePatch(result.usage),
-        streamChars: text.length,
-        preview: text,
-        note: "PLAN",
-      });
-      projectsRepository.updateLiveRun(project.id, run.id, text, "PLAN");
+        projectId: project.id,
+        runId: run.id,
+        model: modelName(),
+      },
+      async () => {
+        const result = await measure(
+          {
+            start: () => "Generate roadmap",
+            end: (value: Awaited<ReturnType<typeof planGame>>) => ({
+              slug: value.plan.slug,
+              milestones: value.plan.milestones.length,
+              usage: value.usage,
+            }),
+            projectId: project.id,
+          },
+          () =>
+            planGame(project.idea, (note) => {
+              projectsRepository.updateRunUsage(run.id, { note });
+              projectsRepository.updateLiveRun(project.id, run.id, "", note);
+            }),
+        );
+        usage = result.usage;
+        const { plan } = result;
+        const milestones = plan.milestones.map((item) => toMilestone(item));
 
-      const parsed = await measure("agent.plan.parse", () =>
-        parseAgentOutput(text),
-      );
-      if (!parsed || parsed.milestones.length !== 3)
-        throw new Error("planner must return exactly three milestones");
-      const milestones = parsed.milestones.map((item) => toMilestone(item));
-      await measure("db.plan.publish", () =>
-        projectsRepository.setPlanningResult(
+        text = await revealPlanningResult(
           project.id,
           run.id,
-          parsed.name || "untitled",
-          parsed.summary || project.idea,
-          milestones,
-        ),
-      );
-    });
+          plan.note,
+          plan.slug,
+          plan.summary,
+          plan.milestones,
+          result.usage,
+        );
+
+        await measure(
+          {
+            start: () => "Publish roadmap",
+            end: (saved: Project) => ({
+              name: saved.name,
+              milestones: saved.milestones.length,
+              status: saved.status,
+            }),
+            projectId: project.id,
+            runId: run.id,
+          },
+          () =>
+            projectsRepository.setPlanningResult(
+              project.id,
+              run.id,
+              plan.slug,
+              plan.summary,
+              milestones,
+            ),
+        );
+      },
+    );
 
     projectsRepository.finishRun(run.id, "complete", {
       ...(usage ? usagePatch(usage) : {}),
+      streamChars: text.length,
       preview: text,
       note: "DONE",
     });
@@ -145,27 +224,50 @@ export async function planProject(
     );
   } catch (error) {
     const message = errorMessage(error);
-    const latest = projectsRepository.get(project.id) || project;
-    const failures = latest.failureCount + 1;
-    const terminal = failures >= MAX_FAILURES;
+    const quota = isQuotaError(message);
+    const transient = !quota && isTransientModelError(message);
+    const publicMessage = quota
+      ? "QUOTA"
+      : transient
+        ? "BUSY"
+        : publicErrorLabel(message);
     projectsRepository.finishRun(run.id, "failed", {
       ...(usage ? usagePatch(usage) : {}),
+      streamChars: text.length,
       preview: text,
+      note: publicMessage,
       error: message,
     });
-    const failed = projectsRepository.failPlanning(
-      project.id,
-      run.id,
-      terminal,
-      message,
-      terminal ? 0 : Date.now() + backoff(latest.failureCount),
-    );
-    if (failed)
-      projectsRepository.event(
-        project.id,
-        terminal ? "agent.failed" : "agent.retry",
-        message,
+
+    if (transient) {
+      const latest = projectsRepository.get(project.id) || project;
+      const retryAt = Date.now() + backoff(latest.failureCount);
+      await measure(
+        {
+          start: () => "Schedule plan retry",
+          end: (saved: Project | null) => ({
+            status: saved?.status || "missing",
+            retryAt: saved?.retryAt || 0,
+          }),
+          projectId: project.id,
+          runId: run.id,
+          retryAt,
+        },
+        () =>
+          projectsRepository.failPlanning(
+            project.id,
+            run.id,
+            false,
+            message,
+            retryAt,
+          ),
       );
+      projectsRepository.event(project.id, "agent.busy", "MODEL BUSY");
+    } else {
+      // Quota and malformed/permanent provider errors are not retried automatically.
+      // Planning remains one model step; transient retries create a fresh run later.
+      projectsRepository.failPlanning(project.id, run.id, true, message, 0);
+    }
   } finally {
     stopHeartbeat();
   }
@@ -206,80 +308,153 @@ export async function buildNext(
       `Started ${milestone.title}.`,
     );
 
-    await measure("agent.project.build", async () => {
-      const artifacts = await measure("db.artifacts.load", () =>
-        projectsRepository.artifacts(project.id),
-      );
-      const previous = artifacts?.[artifacts.length - 1];
-      const steering = await measure("db.steering.load", () =>
-        projectsRepository.openSteering(project.id),
-      );
-
-      const result = await measure("jsx-ai.tool-loop", () =>
-        buildMilestone(
-          reserved,
-          milestone,
-          previous?.html,
-          steering,
-          (activity) => {
-            activityText = activity.text;
-            usage = activity.usage;
-            writeProgress(activity.text, activity.note, activity.usage);
-          },
-        ),
-      );
-      if (!result) throw new Error("build returned no result");
-      usage = result.usage;
-      activityText = result.activityText;
-      writeProgress(activityText, "DONE", result.usage, true);
-
-      await measure("db.status.validating", () =>
-        projectsRepository.setRunStatus(project.id, run.id, "validating", {
-          agentNote: "VALIDATE",
+    await measure(
+      {
+        start: () => `Build milestone ${milestoneIndex + 1}`,
+        end: () => ({
+          runId: run.id,
+          input: usage?.inputTokens || 0,
+          output: usage?.outputTokens || 0,
+          thinking: usage?.thinkingTokens || 0,
         }),
-      );
-
-      const sealed = await measure("artifact.seal", () =>
-        sealHtml(result.html),
-      );
-      const artifactIssues = await measure("artifact.validate", () =>
-        validateArtifactHtml(sealed),
-      );
-      if (artifactIssues.length)
-        throw new Error(`artifact rejected: ${artifactIssues.join("; ")}`);
-      if (!result.nextMilestone.title)
-        throw new Error("agent did not propose the next rolling milestone");
-
-      const nextMilestone = toMilestone(result.nextMilestone);
-      await measure("db.status.publishing", () =>
-        projectsRepository.setRunStatus(project.id, run.id, "publishing", {
-          agentNote: "PUBLISH",
-        }),
-      );
-      const version = milestoneIndex + 1;
-      const sha256 = createHash("sha256").update(sealed).digest("hex");
-      projectsRepository.updateRunUsage(run.id, {
-        ...usagePatch(result.usage),
-        note: result.summary,
-      });
-      await measure("artifact.publish", () =>
-        projectsRepository.ship(
-          project.id,
-          milestoneIndex,
+        projectId: project.id,
+        runId: run.id,
+        milestone: milestone.title,
+      },
+      async () => {
+        const artifacts = await measure(
           {
+            start: () => "Load artifacts",
+            end: (items: ReturnType<typeof projectsRepository.artifacts>) => ({
+              count: items.length,
+            }),
             projectId: project.id,
-            version,
-            milestoneTitle: milestone.title,
-            html: sealed,
-            sha256,
-            runId: run.id,
-            createdAt: Date.now(),
           },
-          nextMilestone,
-          steering.map((item) => item.id),
-        ),
-      );
-    });
+          () => projectsRepository.artifacts(project.id),
+        );
+        const previous = artifacts[artifacts.length - 1];
+        const steering = await measure(
+          {
+            start: () => "Load steering",
+            end: (
+              items: ReturnType<typeof projectsRepository.openSteering>,
+            ) => ({ count: items.length }),
+            projectId: project.id,
+          },
+          () => projectsRepository.openSteering(project.id),
+        );
+
+        const result = await measure(
+          {
+            start: () => "Run build agent",
+            end: (value: Awaited<ReturnType<typeof buildMilestone>>) => ({
+              summary: value.summary,
+              next: value.nextMilestone.title,
+              usage: value.usage,
+            }),
+            projectId: project.id,
+            milestone: milestoneIndex + 1,
+          },
+          () =>
+            buildMilestone(
+              reserved,
+              milestone,
+              previous?.html,
+              steering,
+              (activity) => {
+                activityText = activity.text;
+                usage = activity.usage;
+                writeProgress(activity.text, activity.note, activity.usage);
+              },
+            ),
+        );
+        usage = result.usage;
+        activityText = result.activityText;
+        writeProgress(activityText, "DONE", result.usage, true);
+
+        await measure(
+          {
+            start: () => "Set validating",
+            end: () => ({ status: "validating" }),
+            projectId: project.id,
+            runId: run.id,
+          },
+          () =>
+            projectsRepository.setRunStatus(project.id, run.id, "validating", {
+              agentNote: "VALIDATE",
+            }),
+        );
+
+        const sealed = await measure(
+          {
+            start: () => "Seal artifact",
+            end: (html: string) => ({ bytes: html.length }),
+            projectId: project.id,
+          },
+          () => sealHtml(result.html),
+        );
+        const artifactIssues = await measure(
+          {
+            start: () => "Validate artifact",
+            end: (issues: string[]) => ({ issues: issues.length }),
+            projectId: project.id,
+          },
+          () => validateArtifactHtml(sealed),
+        );
+        if (artifactIssues.length)
+          throw new Error(`artifact rejected: ${artifactIssues.join("; ")}`);
+        if (!result.nextMilestone.title)
+          throw new Error("agent did not propose the next rolling milestone");
+
+        const nextMilestone = toMilestone(result.nextMilestone);
+        await measure(
+          {
+            start: () => "Set publishing",
+            end: () => ({ status: "publishing" }),
+            projectId: project.id,
+            runId: run.id,
+          },
+          () =>
+            projectsRepository.setRunStatus(project.id, run.id, "publishing", {
+              agentNote: "PUBLISH",
+            }),
+        );
+        const version = milestoneIndex + 1;
+        const sha256 = createHash("sha256").update(sealed).digest("hex");
+        projectsRepository.updateRunUsage(run.id, {
+          ...usagePatch(result.usage),
+          note: result.summary,
+        });
+        await measure(
+          {
+            start: () => `Publish v${version}`,
+            end: (saved: Project) => ({
+              version,
+              status: saved.status,
+              sha256: sha256.slice(0, 12),
+            }),
+            projectId: project.id,
+            runId: run.id,
+          },
+          () =>
+            projectsRepository.ship(
+              project.id,
+              milestoneIndex,
+              {
+                projectId: project.id,
+                version,
+                milestoneTitle: milestone.title,
+                html: sealed,
+                sha256,
+                runId: run.id,
+                createdAt: Date.now(),
+              },
+              nextMilestone,
+              steering.map((item) => item.id),
+            ),
+        );
+      },
+    );
 
     projectsRepository.finishRun(run.id, "complete", {
       ...(usage ? usagePatch(usage) : {}),
@@ -301,12 +476,16 @@ export async function buildNext(
       );
   } catch (error) {
     const message = errorMessage(error);
+    const quota = isQuotaError(message);
+    const transient = !quota && isTransientModelError(message);
     const latest = projectsRepository.get(project.id) || project;
     const failures = latest.failureCount + 1;
-    const terminal = failures >= MAX_FAILURES;
+    const terminal = !transient && failures >= MAX_FAILURES;
+    const retryAt = terminal ? 0 : Date.now() + backoff(latest.failureCount);
     projectsRepository.finishRun(run.id, "failed", {
       ...(usage ? usagePatch(usage) : {}),
       preview: activityText,
+      note: quota ? "QUOTA" : transient ? "BUSY" : "RETRY",
       error: message,
     });
     const released = projectsRepository.releaseReservation(
@@ -314,14 +493,21 @@ export async function buildNext(
       run.id,
       terminal ? "failed" : "queued",
       message,
-      terminal ? 0 : Date.now() + backoff(latest.failureCount),
+      retryAt,
     );
-    if (released)
+    if (released && transient) {
+      projectsRepository.setStatus(project.id, "queued", {
+        agentNote: "BUSY",
+        retryAt,
+      });
+      projectsRepository.event(project.id, "agent.busy", "MODEL BUSY");
+    } else if (released) {
       projectsRepository.event(
         project.id,
         terminal ? "agent.failed" : "agent.retry",
         message,
       );
+    }
   } finally {
     stopHeartbeat();
   }

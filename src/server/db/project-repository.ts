@@ -89,6 +89,7 @@ function runFromRow(row: any): AgentRun {
     model: row.model,
     inputTokens: Number(row.inputTokens || 0),
     outputTokens: Number(row.outputTokens || 0),
+    thinkingTokens: Number(row.thinkingTokens || 0),
     cacheCreationInputTokens: Number(row.cacheCreationInputTokens || 0),
     cacheReadInputTokens: Number(row.cacheReadInputTokens || 0),
     lastContextTokens,
@@ -234,9 +235,14 @@ function rowByRunId(runId: string): any | null {
 function usageFromRuns(runs: AgentRun[], project: Project): UsageSummary {
   const inputTokens = runs.reduce((sum, run) => sum + run.inputTokens, 0);
   const outputTokens = runs.reduce((sum, run) => sum + run.outputTokens, 0);
+  const thinkingTokens = runs.reduce((sum, run) => sum + run.thinkingTokens, 0);
   const buildTokens = runs
     .filter((run) => run.kind === "build" && run.status === "complete")
-    .reduce((sum, run) => sum + run.inputTokens + run.outputTokens, 0);
+    .reduce(
+      (sum, run) =>
+        sum + run.inputTokens + run.outputTokens + run.thinkingTokens,
+      0,
+    );
   const tokensPerSpentCredit =
     project.spentCredits > 0 ? buildTokens / project.spentCredits : 0;
   const estimatedFundedTokenRunway =
@@ -249,7 +255,8 @@ function usageFromRuns(runs: AgentRun[], project: Project): UsageSummary {
   return {
     inputTokens,
     outputTokens,
-    totalTokens: inputTokens + outputTokens,
+    thinkingTokens,
+    totalTokens: inputTokens + outputTokens + thinkingTokens,
     buildTokens,
     tokensPerSpentCredit,
     estimatedFundedTokenRunway,
@@ -536,22 +543,33 @@ export const projectsRepository = {
     projectId: string,
     runId: string,
     terminal: boolean,
-    error: string,
+    error: unknown,
     retryAt: number,
   ): Project | null {
+    const message =
+      error instanceof Error
+        ? error.message
+        : typeof error === "string"
+          ? error
+          : String(error || "planning failed");
+    const note = /(?:\b429\b|quota|rate.?limit)/i.test(message)
+      ? "QUOTA"
+      : /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error)/i.test(
+            message,
+          )
+        ? "BUSY"
+        : "MODEL ERROR";
     let result: Project | null = null;
     db.transaction(() => {
       const row = rowByProjectId(projectId);
       if (!row || row.currentRunId !== runId) return;
       row.currentRunId = null;
       row.streamPreview = "";
-      row.error = error.slice(0, 500);
+      row.error = message.slice(0, 500);
       row.failureCount = Number(row.failureCount || 0) + 1;
       row.retryAt = terminal ? 0 : retryAt;
       row.status = terminal ? "failed" : "planning";
-      row.agentNote = terminal
-        ? "Planning stopped after repeated failures."
-        : "Planning hit a transient failure; I’ll retry automatically.";
+      row.agentNote = terminal ? note : note === "BUSY" ? "BUSY" : "RETRY";
       row.updatedAt = now();
       result = projectFromRow(row);
     });
@@ -774,6 +792,7 @@ export const projectsRepository = {
       model: input.model,
       inputTokens: 0,
       outputTokens: 0,
+      thinkingTokens: 0,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
       lastContextTokens: 0,
@@ -795,6 +814,7 @@ export const projectsRepository = {
     usage: Partial<{
       inputTokens: number;
       outputTokens: number;
+      thinkingTokens: number;
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
       lastContextTokens: number;
@@ -812,6 +832,8 @@ export const projectsRepository = {
         row.inputTokens = Math.max(0, Math.floor(usage.inputTokens));
       if (usage.outputTokens !== undefined)
         row.outputTokens = Math.max(0, Math.floor(usage.outputTokens));
+      if (usage.thinkingTokens !== undefined)
+        row.thinkingTokens = Math.max(0, Math.floor(usage.thinkingTokens));
       if (usage.cacheCreationInputTokens !== undefined)
         row.cacheCreationInputTokens = Math.max(
           0,
@@ -844,6 +866,7 @@ export const projectsRepository = {
     patch: Partial<{
       inputTokens: number;
       outputTokens: number;
+      thinkingTokens: number;
       cacheCreationInputTokens: number;
       cacheReadInputTokens: number;
       lastContextTokens: number;
@@ -866,6 +889,8 @@ export const projectsRepository = {
       if (patch.inputTokens !== undefined) row.inputTokens = patch.inputTokens;
       if (patch.outputTokens !== undefined)
         row.outputTokens = patch.outputTokens;
+      if (patch.thinkingTokens !== undefined)
+        row.thinkingTokens = patch.thinkingTokens;
       if (patch.cacheCreationInputTokens !== undefined)
         row.cacheCreationInputTokens = patch.cacheCreationInputTokens;
       if (patch.cacheReadInputTokens !== undefined)

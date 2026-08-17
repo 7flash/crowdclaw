@@ -2,15 +2,17 @@
 
 CrowdClaw uses `jsx-ai` as the complete model/tool boundary for autonomous project agents.
 
-## Default
+## Runtime
+
+For the Codex runtime:
 
 ```dotenv
-GEMINI_API_KEY=...
-GAME_MODEL=gemini-3-flash-preview
+JSX_AI_RUNTIME=codex
+GAME_MODEL=gpt-5.4-mini
 GAME_CONTEXT_WINDOW=1048576
 ```
 
-The application always passes `GAME_MODEL` to `callLLM()`. The default is `gemini-3-flash-preview`.
+CrowdClaw passes `GAME_MODEL` and `JSX_AI_RUNTIME` through to `jsx-ai` and does not duplicate provider/auth validation. `jsx-ai` owns provider/runtime authentication. `@openai/codex-sdk` is included for the Codex runtime.
 
 ## Prompt/tool shape
 
@@ -32,16 +34,10 @@ Assistant messages and tool results are appended as `ExtractedMessage` entries a
 
 ## Provider routing
 
-`jsx-ai` determines the provider from the model name. CrowdClaw only performs an early configuration check for the well-known providers:
+Without a runtime adapter, `jsx-ai` determines the provider from the model name and CrowdClaw performs an early configuration check for known provider API keys. When `JSX_AI_RUNTIME=codex`, that credential preflight is skipped because the runtime owns authentication:
 
-| Model | Key |
-|---|---|
-| `gemini-*` | `GEMINI_API_KEY` |
-| `gpt-*`, `o4-*` | `OPENAI_API_KEY` |
-| `claude-*` | `ANTHROPIC_API_KEY` |
-| `deepseek-*` | `DEEPSEEK_API_KEY` |
 
-Custom provider/model names are allowed and may use their own credential mechanism.
+With `JSX_AI_RUNTIME=codex`, none of the provider API-key rows above are required by CrowdClaw. Custom provider/model names are also allowed and may use their own credential mechanism.
 
 ## Usage accounting
 

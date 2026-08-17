@@ -1,11 +1,23 @@
 /** @jsxImportSource jsx-ai */
-import { callLLM, md, render, streamLLM } from "jsx-ai";
-import type { ExtractedMessage, ToolCall } from "jsx-ai";
+import { md, runAgent } from "jsx-ai";
+import type {
+  AgentContext,
+  AgentRunResult,
+  AgentUsage as JsxAgentUsage,
+  CanonicalToolCall,
+  ExtractedMessage,
+  JsonObject,
+  JsonValue,
+  ToolParametersSchema,
+} from "jsx-ai";
+import { measure } from "measure-fn";
 import {
+  agentMaxDurationMs,
   agentMaxSteps,
   agentMaxTokens,
   agentRequestTimeoutMs,
   contextWindow,
+  jsxAiRuntime,
   modelName,
 } from "../config";
 import type { Milestone, Project, Steering } from "../../shared/types";
@@ -18,43 +30,45 @@ import {
   writeWorkspaceFile,
 } from "./workspace";
 
-export const PLAN_SYS_SOURCE = `You plan tiny browser games that get built one milestone at a time, funded by a crowd.
+const STRATEGY = "hybrid" as const;
+const MODEL = () => modelName();
+const TEMPERATURE = () => (/^gemini-3(?:\.|-|$)/i.test(MODEL()) ? 1.0 : 0.2);
+const PLAN_MAX_STEPS = 1;
+const PLAN_MAX_TOOL_CALLS = 1;
+const BUILD_MAX_TOOL_CALLS = 48;
 
-Given a game idea, respond ONLY in this line format, nothing else:
-N|kebab-case-name
-S|one plain sentence describing the game
-M|first milestone|2
-M|second milestone|2
-M|third milestone|3
+export const PLAN_SYS_SOURCE = `You are a game designer planning a tiny browser game that will be implemented by an autonomous coding agent.
 
-Rules:
-- Exactly three M lines.
-- Titles are 3-7 words, plain, concrete, no numbering, no colons.
-- The first milestone must produce something immediately playable — a real loop, not a scaffold.
-- Cost is a whole number from 1 to 4.`;
+Produce exactly three milestones:
+- Milestone 1 must create an immediately playable self-contained game, not a scaffold.
+- Milestone 2 must materially improve gameplay, progression, feedback, or game feel.
+- Milestone 3 must deepen the game rather than merely restyle it.
+- Costs are whole numbers from 1 to 4.
 
-export const BUILD_SYS_SOURCE = `You are an autonomous browser-game engineer working in a real project directory for CrowdClaw.
-Use the file tools to inspect and modify the project. Prefer a small coherent codebase.
-CrowdClaw publishes index.html as the playable immutable artifact, so index.html MUST be a complete self-contained HTML document and MUST NOT depend on other local files to run.
-You may keep small supporting project files for your own organization, but the playable game must work from index.html alone.
+Submit the complete plan through submit_game_plan. Do not answer in a custom text format.`;
 
-The playable artifact rules:
-- Plain HTML/CSS/JavaScript. No build step.
-- No external scripts, fonts, images, imports, CDNs, fetches, websockets, or other network requests.
+export const BUILD_SYS_SOURCE = `You are an autonomous browser-game engineer working in a real project directory.
+
+Use the workspace tools to inspect and modify the project. The workspace, not old chat history, is the durable source of truth between milestones.
+
+Artifact contract:
+- index.html must be a complete self-contained HTML document.
+- Plain HTML/CSS/JavaScript; no build step.
+- No external scripts, fonts, images, imports, CDNs, fetches, websockets, or network requests.
 - No localStorage, sessionStorage, or IndexedDB.
-- Fill its frame: html,body{margin:0;height:100%;overflow:hidden} and size the canvas or renderer to the window.
-- Dark background, high contrast, clean shapes.
-- Keyboard AND pointer input, with controls shown on screen.
-- A real game loop with score or win/lose and restart without reloading.
-- Keep the implementation compact, coherent, and reliable.
-- When modifying existing work, read relevant files first unless the full current source is already in context.
-- Do not claim the milestone is complete until the requested gameplay is implemented coherently.
-- Use the status tool for short public activity updates before meaningful work. Keep status to 2-8 words and never reveal chain-of-thought or private reasoning.
-- Finish by calling phase_done with a concise summary plus exactly one concrete rolling milestone that should come next.`;
+- Fill the frame and keep the game responsive.
+- Support keyboard and pointer input and show controls on screen.
+- Include a real game loop, score or win/lose state, and restart without a reload.
+- Prefer a compact coherent implementation over many files.
+- Read relevant existing files before modifying them unless their full current source is already in context.
+
+In every model step, include one public_status before meaningful file changes or completion so someone watching can follow the work. It is not private reasoning. Keep it concrete and under eight words.
+complete_milestone is not ceremonial. The host validates index.html and may reject completion with concrete errors. Keep working until validation succeeds.`;
 
 export type AgentUsage = {
   inputTokens: number;
   outputTokens: number;
+  thinkingTokens: number;
   cacheCreationInputTokens: number;
   cacheReadInputTokens: number;
   lastContextTokens: number;
@@ -68,78 +82,269 @@ export type AgentActivity = {
   usage: AgentUsage;
 };
 
+export type PlannedMilestone = {
+  title: string;
+  goal: string;
+  costCredits: number;
+};
+
+export type GamePlan = {
+  slug: string;
+  summary: string;
+  note: string;
+  milestones: PlannedMilestone[];
+};
+
+export type PlanResult = {
+  plan: GamePlan;
+  usage: AgentUsage;
+  result: AgentRunResult<PlanningState>;
+};
+
 export type BuildPhaseResult = {
   html: string;
   summary: string;
-  nextMilestone: { title: string; costCredits: number };
+  nextMilestone: { title: string; goal: string; costCredits: number };
   usage: AgentUsage;
   activityText: string;
+  result: AgentRunResult<CompletionState>;
 };
 
-const WriteFileTool = () => (
-  <tool
-    name="write_file"
-    description="Write or replace a UTF-8 file inside the current game project"
-  >
-    <param name="path" type="string" required>
-      Project-relative path such as index.html
-    </param>
-    <param name="content" type="string" required>
-      Complete file contents
-    </param>
-  </tool>
-);
+type PlanningState = { plan?: GamePlan };
+type CompletionState = {
+  completion?: {
+    summary: string;
+    nextMilestone: string;
+    nextGoal: string;
+    nextCost: number;
+  };
+};
 
-const ReadFileTool = () => (
-  <tool
-    name="read_file"
-    description="Read a UTF-8 file from the current game project"
-  >
-    <param name="path" type="string" required>
-      Project-relative path
-    </param>
-  </tool>
-);
+const PLAN_SCHEMA: ToolParametersSchema = {
+  type: "object",
+  properties: {
+    slug: {
+      type: "string",
+      description: "Short kebab-case game name",
+    },
+    summary: {
+      type: "string",
+      description: "One plain sentence describing the game",
+    },
+    note: {
+      type: "string",
+      description:
+        "One short public design note about the core loop, maximum 8 words",
+    },
+    milestones: {
+      type: "array",
+      description: "Exactly three concrete implementation milestones",
+      items: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "Concrete 3-7 word milestone title",
+          },
+          goal: {
+            type: "string",
+            description:
+              "What the player should experience after this milestone",
+          },
+          cost: {
+            type: "integer",
+          },
+        },
+        required: ["title", "goal", "cost"],
+      },
+    },
+  },
+  required: ["slug", "summary", "note", "milestones"],
+};
 
-const ListFilesTool = () => (
+const COMPLETE_SCHEMA: ToolParametersSchema = {
+  type: "object",
+  properties: {
+    summary: {
+      type: "string",
+      description: "Concise description of completed gameplay work",
+    },
+    next_milestone: {
+      type: "string",
+      description:
+        "One concrete 3-7 word gameplay milestone that should come next",
+    },
+    next_goal: {
+      type: "string",
+      description:
+        "What the player should experience after that next milestone",
+    },
+    next_cost: {
+      type: "integer",
+    },
+  },
+  required: ["summary", "next_milestone", "next_goal", "next_cost"],
+};
+
+const PlanningTools = () => (
   <tool
-    name="list_files"
-    description="List all files currently present in the game project"
+    name="submit_game_plan"
+    description="Submit the complete three-milestone game plan"
+    schema={PLAN_SCHEMA}
   />
 );
 
-const StatusTool = () => (
-  <tool
-    name="status"
-    description="Publish one short public activity update. This is not private reasoning; describe only the action being taken now."
-  >
-    <param name="text" type="string" required>
-      2-8 words, concrete and player-facing
-    </param>
-  </tool>
+const WorkspaceTools = () => (
+  <>
+    <tool
+      name="public_status"
+      description="Publish one short public activity update for someone watching the agent"
+    >
+      <param name="text" type="string" required>
+        Concrete action, 2-8 words
+      </param>
+    </tool>
+    <tool
+      name="write_file"
+      description="Write or replace a UTF-8 file inside the game project"
+    >
+      <param name="path" type="string" required>
+        Project-relative path such as index.html
+      </param>
+      <param name="content" type="string" required>
+        Complete file contents
+      </param>
+    </tool>
+    <tool
+      name="read_file"
+      description="Read a UTF-8 file from the current game project"
+    >
+      <param name="path" type="string" required>
+        Project-relative path
+      </param>
+    </tool>
+    <tool
+      name="list_files"
+      description="List the current game project files and byte sizes"
+    />
+    <tool
+      name="complete_milestone"
+      description="Request completion only after the gameplay goal is implemented; the host validates index.html before accepting it"
+      schema={COMPLETE_SCHEMA}
+    />
+  </>
 );
 
-const PhaseDoneTool = () => (
-  <tool
-    name="phase_done"
-    description="Finish the current milestone only when its gameplay goal is implemented coherently and index.html is runnable"
-  >
-    <param name="summary" type="string" required>
-      Short first-person description of what was completed
-    </param>
-    <param name="next_milestone" type="string" required>
-      One concrete 3-7 word gameplay milestone the player will feel next
-    </param>
-    <param name="next_cost" type="number" required>
-      Whole-number CrowdClaw cost from 1 to 4
-    </param>
-  </tool>
-);
+function Conversation({ history }: { history: readonly ExtractedMessage[] }) {
+  return (
+    <>
+      {history.map((message) => (
+        <message
+          role={message.role}
+          toolCalls={message.toolCalls}
+          toolCallId={message.toolCallId}
+          toolName={message.toolName}
+          isError={message.isError}
+        >
+          {message.content}
+        </message>
+      ))}
+    </>
+  );
+}
+
+function PlanningPrompt({ history }: { history: readonly ExtractedMessage[] }) {
+  return (
+    <prompt
+      model={MODEL()}
+      strategy={STRATEGY}
+      temperature={TEMPERATURE()}
+      maxTokens={1800}
+    >
+      <system>{md`${PLAN_SYS_SOURCE}`}</system>
+      <PlanningTools />
+      <Conversation history={history} />
+    </prompt>
+  );
+}
+
+function MilestonePrompt({
+  history,
+}: {
+  history: readonly ExtractedMessage[];
+}) {
+  return (
+    <prompt
+      model={MODEL()}
+      strategy={STRATEGY}
+      temperature={TEMPERATURE()}
+      maxTokens={agentMaxTokens()}
+    >
+      <system>{md`${BUILD_SYS_SOURCE}`}</system>
+      <WorkspaceTools />
+      <Conversation history={history} />
+    </prompt>
+  );
+}
+
+function asObject(value: JsonValue | undefined, label: string): JsonObject {
+  if (value == null || Array.isArray(value) || typeof value !== "object")
+    throw new Error(`${label} must be an object`);
+  return value;
+}
+
+function asArray(value: JsonValue | undefined, label: string): JsonValue[] {
+  if (!Array.isArray(value)) throw new Error(`${label} must be an array`);
+  return value;
+}
+
+function asString(value: JsonValue | undefined, label: string): string {
+  if (typeof value !== "string" || !value.trim())
+    throw new Error(`${label} must be a non-empty string`);
+  return value.trim();
+}
+
+function asInteger(value: JsonValue | undefined, label: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value))
+    throw new Error(`${label} must be an integer`);
+  return value;
+}
+
+function parsePlan(args: JsonObject): GamePlan {
+  const milestones = asArray(args.milestones, "milestones").map(
+    (value, index) => {
+      const item = asObject(value, `milestones[${index}]`);
+      const title = asString(item.title, `milestones[${index}].title`);
+      const words = title.split(/\s+/).filter(Boolean).length;
+      if (words < 3 || words > 7)
+        throw new Error(`milestones[${index}].title must contain 3-7 words`);
+      const cost = asInteger(item.cost, `milestones[${index}].cost`);
+      if (cost < 1 || cost > 4)
+        throw new Error(`milestones[${index}].cost must be between 1 and 4`);
+      return {
+        title,
+        goal: asString(item.goal, `milestones[${index}].goal`),
+        costCredits: cost,
+      };
+    },
+  );
+  if (milestones.length !== 3)
+    throw new Error("A game plan must contain exactly three milestones");
+  const slug = asString(args.slug, "slug");
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+    throw new Error("slug must be kebab-case");
+  const summary = asString(args.summary, "summary");
+  if (summary.length < 8 || summary.length > 180)
+    throw new Error("summary must be 8-180 characters");
+  const note = asString(args.note, "note").split(/\s+/).slice(0, 8).join(" ");
+  return { slug, summary, note, milestones };
+}
 
 function blankUsage(): AgentUsage {
   return {
     inputTokens: 0,
     outputTokens: 0,
+    thinkingTokens: 0,
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
     lastContextTokens: 0,
@@ -148,91 +353,24 @@ function blankUsage(): AgentUsage {
   };
 }
 
-function estimateTokens(value: unknown): number {
-  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
-  return Math.max(0, Math.ceil(text.length / 4));
-}
-
-function numberFrom(raw: any, keys: string[]): number {
-  for (const key of keys) {
-    const value = raw?.[key];
-    if (Number.isFinite(value)) return Math.max(0, Math.floor(Number(value)));
-  }
-  return 0;
-}
-
-function usageFromResult(result: any, promptTree: unknown): AgentUsage {
-  // jsx-ai normalizes provider usage to inputTokens/outputTokens. Keep the
-  // compatibility aliases below so older adapters do not break persisted usage.
-  const raw =
-    result?.usage || result?.response?.usage || result?.metadata?.usage || {};
-  const inputTokens = numberFrom(raw, [
-    "inputTokens",
-    "input_tokens",
-    "promptTokens",
-    "prompt_tokens",
-  ]);
-  const outputTokens = numberFrom(raw, [
-    "outputTokens",
-    "output_tokens",
-    "completionTokens",
-    "completion_tokens",
-  ]);
-  const cacheCreationInputTokens = numberFrom(raw, [
-    "cacheCreationInputTokens",
-    "cache_creation_input_tokens",
-  ]);
-  const cacheReadInputTokens = numberFrom(raw, [
-    "cacheReadInputTokens",
-    "cache_read_input_tokens",
-    "cachedTokens",
-    "cached_tokens",
-  ]);
-  const hasProviderUsage = inputTokens > 0 || outputTokens > 0;
-
-  let estimatedInput = 0;
-  try {
-    estimatedInput = estimateTokens(render(promptTree as any));
-  } catch {
-    estimatedInput = estimateTokens(promptTree);
-  }
-  const estimatedOutput = estimateTokens({
-    text: result?.text || "",
-    toolCalls: result?.toolCalls || [],
-  });
-  const input = hasProviderUsage ? inputTokens : estimatedInput;
-  const output = hasProviderUsage ? outputTokens : estimatedOutput;
-
+function usageFromAgent(usage: JsxAgentUsage | undefined): AgentUsage {
+  const inputTokens = Math.max(0, Math.floor(usage?.inputTokens || 0));
+  const outputTokens = Math.max(0, Math.floor(usage?.outputTokens || 0));
+  const thinkingTokens = Math.max(0, Math.floor(usage?.thinkingTokens || 0));
   return {
-    inputTokens: input,
-    outputTokens: output,
-    cacheCreationInputTokens,
-    cacheReadInputTokens,
-    // Provider input usage already represents the prompt/context sent for this
-    // request. Cache counters are supplemental metadata and must not be added
-    // again or the context meter can double-count cached input.
-    lastContextTokens: input + output,
+    inputTokens,
+    outputTokens,
+    thinkingTokens,
+    cacheCreationInputTokens: 0,
+    cacheReadInputTokens: 0,
+    lastContextTokens: inputTokens + outputTokens + thinkingTokens,
     contextWindow: contextWindow(),
-    estimated: !hasProviderUsage,
-  };
-}
-
-function addUsage(total: AgentUsage, call: AgentUsage): AgentUsage {
-  return {
-    inputTokens: total.inputTokens + call.inputTokens,
-    outputTokens: total.outputTokens + call.outputTokens,
-    cacheCreationInputTokens:
-      total.cacheCreationInputTokens + call.cacheCreationInputTokens,
-    cacheReadInputTokens:
-      total.cacheReadInputTokens + call.cacheReadInputTokens,
-    lastContextTokens: call.lastContextTokens,
-    contextWindow: call.contextWindow,
-    estimated: total.estimated || call.estimated,
+    estimated: false,
   };
 }
 
 function toolResult(
-  call: ToolCall,
+  call: CanonicalToolCall,
   content: string,
   isError = false,
 ): ExtractedMessage {
@@ -245,34 +383,56 @@ function toolResult(
   };
 }
 
-function executeTool(
+function manifest(projectId: string): Array<{ file: string; bytes: number }> {
+  return listWorkspaceFiles(projectId).map((file) => ({
+    file,
+    bytes: readWorkspaceFile(projectId, file).length,
+  }));
+}
+
+function executePlanningTool(
+  call: CanonicalToolCall,
+  context: AgentContext<PlanningState>,
+): ExtractedMessage {
+  if (call.name !== "submit_game_plan")
+    return toolResult(call, `Unknown planning tool: ${call.name}`, true);
+  try {
+    const plan = parsePlan(call.args);
+    context.state.plan = plan;
+    return toolResult(call, `Accepted ${plan.slug}.`);
+  } catch (error) {
+    return toolResult(
+      call,
+      error instanceof Error ? error.message : String(error),
+      true,
+    );
+  }
+}
+
+function publicStatus(raw: JsonValue | undefined): string {
+  const words = asString(raw, "text")
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 8);
+  if (words.length < 2) throw new Error("public_status requires 2-8 words");
+  return words.join(" ").slice(0, 100);
+}
+
+function executeWorkspaceTool(
   projectId: string,
-  call: ToolCall,
-): {
-  message: ExtractedMessage;
-  note: string;
-  done?: { summary: string; title: string; cost: number };
-} {
+  call: CanonicalToolCall,
+  context: AgentContext<CompletionState>,
+): { message: ExtractedMessage; note: string } {
   try {
     switch (call.name) {
-      case "status": {
-        const words = String(call.args.text || "")
-          .trim()
-          .replace(/\s+/g, " ")
-          .split(" ")
-          .filter(Boolean)
-          .slice(0, 8);
-        const text = words.join(" ").slice(0, 100);
-        if (words.length < 2)
-          return {
-            message: toolResult(call, "status requires 2-8 words", true),
-            note: "WORKING",
-          };
-        return { message: toolResult(call, "Status published."), note: text };
+      case "public_status": {
+        const text = publicStatus(call.args.text);
+        return { message: toolResult(call, "Published."), note: text };
       }
       case "write_file": {
-        const path = String(call.args.path || "");
-        const content = String(call.args.content || "");
+        const path = asString(call.args.path, "path");
+        const content = asString(call.args.content, "content");
         writeWorkspaceFile(projectId, path, content);
         return {
           message: toolResult(call, `Wrote ${path} (${content.length} chars).`),
@@ -280,129 +440,147 @@ function executeTool(
         };
       }
       case "read_file": {
-        const path = String(call.args.path || "");
-        const content = readWorkspaceFile(projectId, path);
-        return { message: toolResult(call, content), note: `READ ${path}` };
-      }
-      case "list_files": {
-        const files = listWorkspaceFiles(projectId);
+        const path = asString(call.args.path, "path");
         return {
-          message: toolResult(call, JSON.stringify(files, null, 2)),
-          note: "FILES",
+          message: toolResult(call, readWorkspaceFile(projectId, path)),
+          note: `READ ${path}`,
         };
       }
-      case "phase_done": {
-        const summary = String(call.args.summary || "")
-          .trim()
-          .slice(0, 220);
-        const title = String(call.args.next_milestone || "")
-          .trim()
-          .replace(/\s+/g, " ")
-          .slice(0, 100);
-        const cost = Number(call.args.next_cost);
-        const words = title ? title.split(" ").filter(Boolean).length : 0;
-        if (!summary)
-          return {
-            message: toolResult(call, "phase_done requires a summary", true),
-            note: "FIX SUMMARY",
-          };
+      case "list_files":
+        return {
+          message: toolResult(
+            call,
+            JSON.stringify(manifest(projectId), null, 2),
+          ),
+          note: "FILES",
+        };
+      case "complete_milestone": {
+        const summary = asString(call.args.summary, "summary");
+        const nextMilestone = asString(
+          call.args.next_milestone,
+          "next_milestone",
+        );
+        const words = nextMilestone.split(/\s+/).filter(Boolean).length;
         if (words < 3 || words > 7)
-          return {
-            message: toolResult(call, "next_milestone must be 3-7 words", true),
-            note: "FIX NEXT",
-          };
-        if (!Number.isInteger(cost) || cost < 1 || cost > 4)
+          throw new Error("next_milestone must contain 3-7 words");
+        const nextCost = asInteger(call.args.next_cost, "next_cost");
+        if (nextCost < 1 || nextCost > 4)
+          throw new Error("next_cost must be between 1 and 4");
+        const nextGoal = asString(call.args.next_goal, "next_goal");
+        const html = readWorkspaceIndex(projectId);
+        const issues = validateArtifactHtml(html);
+        if (issues.length) {
           return {
             message: toolResult(
               call,
-              "next_cost must be a whole number from 1 to 4",
+              `Completion rejected. Fix index.html and try again:\n- ${issues.join("\n- ")}`,
               true,
             ),
-            note: "FIX COST",
+            note: "FIX index.html",
           };
+        }
+        context.state.completion = {
+          summary,
+          nextMilestone,
+          nextGoal,
+          nextCost,
+        };
         return {
-          message: toolResult(call, `Completion requested: ${summary}`),
+          message: toolResult(call, `Milestone accepted: ${summary}`),
           note: "DONE",
-          done: { summary, title, cost },
         };
       }
       default:
         return {
-          message: toolResult(call, `Unknown tool: ${call.name}`, true),
+          message: toolResult(
+            call,
+            `Unknown workspace tool: ${call.name}`,
+            true,
+          ),
           note: `TOOL ${call.name}`,
         };
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     return {
-      message: toolResult(call, message, true),
+      message: toolResult(
+        call,
+        error instanceof Error ? error.message : String(error),
+        true,
+      ),
       note: `ERROR ${call.name}`,
     };
   }
 }
 
-function planPromptTree(idea: string) {
-  return (
-    <prompt
-      model={modelName()}
-      strategy="hybrid"
-      temperature={0.2}
-      maxTokens={1200}
-    >
-      <system>{PLAN_SYS_SOURCE}</system>
-      <message role="user">{idea}</message>
-    </prompt>
-  );
+function summarizeAgentRun<State>(result: AgentRunResult<State>) {
+  return {
+    reason: result.reason,
+    steps: result.steps.length,
+    toolCalls: result.toolCallsExecuted,
+    elapsedMs: result.elapsedMs,
+    usage: result.usage,
+  };
 }
 
-function buildPromptTree(history: ExtractedMessage[]) {
-  return (
-    <prompt
-      model={modelName()}
-      strategy="hybrid"
-      temperature={0.2}
-      maxTokens={agentMaxTokens()}
-    >
-      <system>{md`${BUILD_SYS_SOURCE}`}</system>
-      <WriteFileTool />
-      <ReadFileTool />
-      <ListFilesTool />
-      <StatusTool />
-      <PhaseDoneTool />
-      {history.map((message) => (
-        <message
-          role={message.role}
-          toolCalls={message.toolCalls}
-          toolCallId={message.toolCallId}
-          toolName={message.toolName}
-          isError={message.isError}
-        >
-          {message.content}
-        </message>
-      ))}
-    </prompt>
-  );
+function summarizeToolMessage(message: ExtractedMessage) {
+  return {
+    tool: message.toolName || "",
+    error: Boolean(message.isError),
+    chars: message.content.length,
+  };
 }
 
 export async function planGame(
   idea: string,
-  onText?: (text: string, usage: AgentUsage) => void,
-): Promise<{ text: string; usage: AgentUsage }> {
-  const tree = planPromptTree(idea);
-  let text = "";
-  for await (const chunk of streamLLM(
-    modelName(),
-    [
-      { role: "system", content: PLAN_SYS_SOURCE },
-      { role: "user", content: idea },
-    ],
-    { temperature: 0.2, maxTokens: 1200 },
-  )) {
-    text += chunk;
-    const usage = usageFromResult({ text, toolCalls: [] }, tree);
-    onText?.(text, usage);
+  onNote?: (note: string) => void,
+): Promise<PlanResult> {
+  const state: PlanningState = {};
+  onNote?.("THINKING");
+  const result = await measure(
+    {
+      start: () => "jsx-ai planning agent",
+      end: summarizeAgentRun,
+      model: MODEL(),
+      strategy: STRATEGY,
+    },
+    () =>
+      runAgent({
+        state,
+        history: [{ role: "user", content: idea }],
+        buildPrompt: (history) => <PlanningPrompt history={history} />,
+        executeTool: async (call, context) =>
+          measure(
+            {
+              start: () => `Tool ${call.name}`,
+              end: summarizeToolMessage,
+              tool: call.name,
+            },
+            () => executePlanningTool(call, context),
+          ),
+        // Keep runAgent's default runtime-aware model call so JSX_AI_RUNTIME can select Codex.
+        callOptions: {
+          model: MODEL(),
+          strategy: STRATEGY,
+          ...(jsxAiRuntime() ? { runtime: jsxAiRuntime() } : {}),
+          // Initial planning is deliberately one provider request. A 429 or other
+          // provider failure is surfaced to the project instead of retried silently.
+          retries: 0,
+          timeoutMs: Math.min(agentRequestTimeoutMs(), 45_000),
+        },
+        maxSteps: PLAN_MAX_STEPS,
+        maxToolCalls: PLAN_MAX_TOOL_CALLS,
+        isComplete: (_response, _toolResults, context) =>
+          Boolean(context.state.plan),
+      }),
+  );
+
+  if (result.reason !== "completed" || !state.plan) {
+    throw new Error(
+      `Planning stopped with ${result.reason} without a valid plan.`,
+    );
   }
-  return { text, usage: usageFromResult({ text, toolCalls: [] }, tree) };
+  onNote?.(state.plan.note);
+  return { plan: state.plan, usage: usageFromAgent(result.usage), result };
 }
 
 export async function buildMilestone(
@@ -415,102 +593,114 @@ export async function buildMilestone(
   ensureWorkspaceIndex(project.id, previousHtml);
   const files = listWorkspaceFiles(project.id);
   const goal = md`
-    PROJECT: ${project.idea}
-    CURRENT MILESTONE ${project.done + 1}: ${milestone.title}
+    GAME: ${project.summary || project.idea}
+    MILESTONE ${project.done + 1}: ${milestone.title}
+    ${milestone.goal ? `GOAL: ${milestone.goal}` : ""}
+    BUDGET SIGNAL: ${milestone.costCredits}/4
 
-    Implement this milestone in the existing project directory. ${files.length ? `Current files: ${files.join(", ")}. Inspect relevant files before editing.` : "The workspace is empty; build the first playable version now."}
-    Preserve the strongest existing mechanics. Do not merely restyle the game.
-    Leave a complete self-contained index.html that passes the CrowdClaw artifact rules.
-    ${steering.length ? `SUPPORTER STEERING:\n${steering.map((item) => `- ${item.influence.toFixed(2)} influence: ${item.instruction}`).join("\n")}\nUse influence as weight. Apply compatible requests to this implementation and let stronger requests shape the rolling milestone you propose.` : ""}
-    When the milestone is genuinely playable, call phase_done and propose exactly one rolling next milestone with cost 1-4.
+    ${
+      files.length
+        ? `The workspace already contains: ${files.join(", ")}. Inspect relevant files and evolve the existing game.`
+        : "The workspace is empty. Build the first immediately playable version now."
+    }
+
+    Preserve strong existing mechanics. Do not satisfy this milestone with cosmetic changes alone.
+    ${
+      steering.length
+        ? `SUPPORTER STEERING:\n${steering.map((item) => `- ${item.influence.toFixed(2)} influence: ${item.instruction}`).join("\n")}\nUse influence as weight. Apply compatible requests and let stronger requests shape the rolling milestone.`
+        : ""
+    }
+    Leave a complete self-contained index.html, then call complete_milestone.
   `;
 
-  const history: ExtractedMessage[] = [{ role: "user", content: goal }];
-  let total = blankUsage();
-  let activityText = "";
-
-  for (let step = 0; step < agentMaxSteps(); step += 1) {
-    const tree = buildPromptTree(history);
-    const result = await callLLM(tree, {
-      model: modelName(),
-      strategy: "hybrid",
-      retries: 3,
-      timeoutMs: agentRequestTimeoutMs(),
-    });
-
-    const callUsage = usageFromResult(result, tree);
-    total = addUsage(total, callUsage);
-    const assistantText = result.text || "";
-    const toolCalls = result.toolCalls || [];
-    history.push({ role: "assistant", content: assistantText, toolCalls });
-
-    if (!toolCalls.length) {
-      const reminder =
-        "Continue by using the available file tools. Call phase_done only after index.html is playable and the milestone is implemented.";
-      history.push({ role: "user", content: reminder });
-      onActivity({
-        text: activityText.slice(-1800),
-        note: "WORKING",
-        usage: total,
-      });
-      continue;
-    }
-
-    let completed: { summary: string; title: string; cost: number } | null =
-      null;
-    for (const call of toolCalls) {
-      const executed = executeTool(project.id, call);
-      history.push(executed.message);
-      activityText += `${executed.note}\n`;
-      if (executed.done) completed = executed.done;
-      onActivity({
-        text: activityText.slice(-1800),
-        note: executed.note,
-        usage: total,
-      });
-    }
-
-    if (completed) {
-      let html = "";
-      try {
-        html = readWorkspaceIndex(project.id);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        history.push({
-          role: "user",
-          content: `phase_done was rejected because ${message}. Create/fix index.html and call phase_done again.`,
-        });
-        onActivity({
-          text: activityText.slice(-1800),
-          note: "FIX index.html",
-          usage: total,
-        });
-        continue;
-      }
-      const issues = validateArtifactHtml(html);
-      if (issues.length) {
-        history.push({
-          role: "user",
-          content: `phase_done was rejected by CrowdClaw validation: ${issues.join("; ")}. Fix index.html with the file tools and call phase_done again.`,
-        });
-        onActivity({
-          text: activityText.slice(-1800),
-          note: "FIX index.html",
-          usage: total,
-        });
-        continue;
-      }
-      return {
-        html,
-        summary: completed.summary,
-        nextMilestone: { title: completed.title, costCredits: completed.cost },
-        usage: total,
-        activityText,
-      };
-    }
+  const state: CompletionState = {};
+  let activityText = "OPEN WORKSPACE\n";
+  let liveUsage = blankUsage();
+  onActivity({ text: activityText, note: "OPEN WORKSPACE", usage: liveUsage });
+  if (files.length) {
+    activityText += `FILES ${files.length}\n`;
+    onActivity({ text: activityText, note: "FILES", usage: liveUsage });
   }
 
-  throw new Error(
-    `Milestone exceeded ${agentMaxSteps()} model/tool iterations`,
+  const result = await measure(
+    {
+      start: () => "jsx-ai build agent",
+      end: summarizeAgentRun,
+      projectId: project.id,
+      milestone: project.done + 1,
+      model: MODEL(),
+      strategy: STRATEGY,
+    },
+    () =>
+      runAgent({
+        state,
+        // Fresh model history per milestone. The filesystem is durable state.
+        history: [{ role: "user", content: goal }],
+        buildPrompt: (history) => <MilestonePrompt history={history} />,
+        executeTool: async (call, context) => {
+          const executed = await measure(
+            {
+              start: () => `Tool ${call.name}`,
+              end: (value: ReturnType<typeof executeWorkspaceTool>) => ({
+                note: value.note,
+                ...summarizeToolMessage(value.message),
+              }),
+              projectId: project.id,
+              tool: call.name,
+            },
+            () => executeWorkspaceTool(project.id, call, context),
+          );
+          activityText += `${executed.note}\n`;
+          onActivity({
+            text: activityText.slice(-1800),
+            note: executed.note,
+            usage: liveUsage,
+          });
+          return executed.message;
+        },
+        // Keep runAgent's default runtime-aware model call here too.
+        callOptions: {
+          model: MODEL(),
+          strategy: STRATEGY,
+          ...(jsxAiRuntime() ? { runtime: jsxAiRuntime() } : {}),
+          retries: 2,
+          timeoutMs: agentRequestTimeoutMs(),
+        },
+        maxSteps: agentMaxSteps(),
+        maxToolCalls: BUILD_MAX_TOOL_CALLS,
+        maxDurationMs: agentMaxDurationMs(),
+        isComplete: (_response, _toolResults, context) =>
+          Boolean(context.state.completion),
+        onNoToolCalls: (response) =>
+          response.text.trim()
+            ? "Continue with the workspace tools. complete_milestone is valid only after the artifact passes host validation."
+            : "Inspect or modify the workspace with tools and continue the milestone.",
+      }),
   );
+
+  liveUsage = usageFromAgent(result.usage);
+  onActivity({
+    text: activityText.slice(-1800),
+    note: state.completion ? "DONE" : "STOPPED",
+    usage: liveUsage,
+  });
+
+  if (result.reason !== "completed" || !state.completion) {
+    throw new Error(
+      `Milestone stopped with ${result.reason} before validated completion.`,
+    );
+  }
+
+  return {
+    html: readWorkspaceIndex(project.id),
+    summary: state.completion.summary,
+    nextMilestone: {
+      title: state.completion.nextMilestone,
+      goal: state.completion.nextGoal,
+      costCredits: state.completion.nextCost,
+    },
+    usage: liveUsage,
+    activityText,
+    result,
+  };
 }

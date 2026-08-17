@@ -10,28 +10,35 @@ export type HomeViewProps = {
   onDraft: (value: string) => void;
   lamportsPerCredit: number;
   onCreate: () => void;
+  error?: string | null;
 };
 
 export function HomeView(props: HomeViewProps) {
+  const planning = props.creating || Boolean(props.planningProject);
   return (
     <div className="cc min-h-screen">
       <BrandBar />
-      <div className="mx-auto max-w-[700px] px-5 pb-16">
-        <section className="cc-rise pt-[78px] pb-[30px] text-center">
-          <h1 className="font-display m-0 mb-5 text-[clamp(2.7rem,8vw,4.8rem)] font-extrabold leading-[.88] tracking-[-.025em]">
-            Describe your{" "}
-            <em className="not-italic text-[var(--claw)]">Idea</em>.<br />
-            Agent keeps building it.
-          </h1>
-          <p className="mx-auto mb-8 max-w-[520px] text-[14px] leading-6 text-[var(--dim)]">
-            Anyone can fund it. Supporters steer what it builds next.
-          </p>
+      <div
+        className={`mx-auto px-5 pb-16 ${planning ? "max-w-[660px]" : "max-w-[700px]"}`}
+      >
+        {!planning ? (
+          <section className="cc-rise pt-[78px] pb-[30px] text-center">
+            <h1 className="font-display m-0 mb-5 text-[clamp(2.7rem,8vw,4.8rem)] font-extrabold leading-[.88] tracking-[-.025em]">
+              Describe your{" "}
+              <em className="not-italic text-[var(--claw)]">Idea</em>.<br />
+              Agent keeps building it.
+            </h1>
+            <p className="mx-auto mb-8 max-w-[520px] text-[14px] leading-6 text-[var(--dim)]">
+              Anyone can fund it. Supporters steer what it builds next.
+            </p>
 
-          {!props.planningProject ? (
             <div className="cc-box text-left">
               <textarea
                 className="min-h-[94px] w-full resize-none border-0 bg-transparent px-[18px] pt-[18px] pb-1 text-[16.5px] leading-6 outline-none placeholder:text-[var(--dimmer)]"
                 value={props.draft}
+                maxLength={2000}
+                aria-label="Idea"
+                aria-describedby="idea-minimum"
                 placeholder="snake, walls closing in"
                 onInput={(event: Event) =>
                   props.onDraft(
@@ -42,32 +49,49 @@ export function HomeView(props: HomeViewProps) {
                   if (
                     event.key === "Enter" &&
                     (event.metaKey || event.ctrlKey) &&
-                    props.draft.trim().length > 9 &&
+                    props.draft.trim().length >= 10 &&
                     !props.creating
                   )
                     props.onCreate();
                 }}
               />
               <div className="flex items-center px-[10px] pt-2 pb-[10px]">
+                <span
+                  id="idea-minimum"
+                  className={`font-data px-2 text-[9px] ${props.draft.trim().length >= 10 ? "text-[var(--mint)]" : "text-[var(--dimmer)]"}`}
+                >
+                  {props.draft.trim().length >= 10
+                    ? "✓"
+                    : `${props.draft.trim().length}/10`}
+                </span>
                 <button
                   className="cc-btn cc-btn-primary ml-auto min-w-[54px]"
-                  disabled={props.draft.trim().length < 10 || props.creating}
+                  disabled={props.draft.trim().length < 10}
                   onClick={props.onCreate}
                   aria-label="Create"
                 >
-                  {props.creating ? <span className="cc-spinner" /> : "→"}
+                  →
                 </button>
               </div>
             </div>
-          ) : (
+            {props.error ? (
+              <div className="mt-3 font-data text-[10px] text-[var(--claw)]">
+                {publicErrorLabel(props.error)}
+              </div>
+            ) : null}
+          </section>
+        ) : (
+          <section className="pt-[72px] pb-[30px]">
             <Planning
               project={props.planningProject}
+              idea={props.draft}
+              creating={props.creating}
               lamportsPerCredit={props.lamportsPerCredit}
             />
-          )}
-        </section>
+          </section>
+        )}
 
-        {!props.planningProject && props.projects.length ? (
+        {!planning && props.projects.length ? (
           <section className="mt-12 border-t border-[var(--line)]">
             {props.projects.map((project) => (
               <a
@@ -95,64 +119,102 @@ export function HomeView(props: HomeViewProps) {
 
 function Planning({
   project,
+  idea,
+  creating,
   lamportsPerCredit,
 }: {
-  project: Project;
+  project: Project | null;
+  idea: string;
+  creating: boolean;
   lamportsPerCredit: number;
 }) {
-  const preview = parsePlan(project.streamPreview);
+  const preview = parsePlan(project?.streamPreview || "");
   const name =
-    preview.name || (project.name !== "new-project" ? project.name : "");
+    preview.name ||
+    (project && project.name !== "new-project" ? project.name : "");
   const summary =
-    preview.summary || (project.name !== "new-project" ? project.summary : "");
+    preview.summary ||
+    (project && project.name !== "new-project" ? project.summary : "");
+  const thought = preview.thought;
   const milestones = preview.milestones.length
     ? preview.milestones
-    : project.milestones;
+    : project?.milestones || [];
+  const stage = planStage({
+    project,
+    creating,
+    name,
+    summary,
+    milestones: milestones.length,
+  });
+
   return (
-    <div className="cc-project-transition mt-8 text-left">
-      <div className="border-l-2 border-[var(--claw)] pl-4 text-[14px] text-[var(--dim)]">
-        {project.idea}
+    <div className="cc-project-transition text-left">
+      <div className="border-l-2 border-[var(--claw)] pl-4 text-[15px] text-[var(--dim)]">
+        {project?.idea || idea}
       </div>
-      <div className="mt-7 flex min-h-[34px] items-center gap-3">
-        {!name ? (
-          <span className="cc-spinner" />
-        ) : (
-          <div className="font-display text-[32px] font-extrabold uppercase leading-none">
-            {name}
-          </div>
-        )}
+
+      <div className="mt-8 flex items-center gap-3 font-data text-[10px] uppercase tracking-[.18em] text-[var(--dimmer)]">
+        <span className="cc-plan-signal" aria-hidden="true" />
+        <span key={stage} className="cc-fade">
+          {stage}
+        </span>
       </div>
-      {summary ? (
-        <div className="mt-2 text-[13px] text-[var(--dim)]">{summary}</div>
-      ) : null}
-      <div className="mt-5 grid gap-[5px]">
-        {milestones.slice(0, 3).map((milestone, index) => (
-          <div
-            key={`${milestone.title}-${index}`}
-            className={`cc-milestone ${index === 0 ? "cc-next" : "opacity-60"}`}
-            style={{ animation: "rise .32s backwards" }}
-          >
-            <span className="font-data text-[10px] text-[var(--dimmer)]">
-              {index + 1}
-            </span>
-            <span className="text-sm leading-[1.35]">{milestone.title}</span>
-            <span className="font-data text-[10px] text-[var(--dimmer)]">
-              {(
-                (milestone.costCredits * lamportsPerCredit) /
-                SOL_LAMPORTS
-              ).toFixed(3)}{" "}
-              SOL
-            </span>
-          </div>
-        ))}
-        {!milestones.length ? <div className="cc-skeleton mt-1" /> : null}
-      </div>
-      {project.status === "failed" ? (
-        <div className="mt-4 text-[12px] text-[var(--claw)]">
-          {project.error}
+
+      {thought ? (
+        <div className="cc-fade mt-4 font-data text-[11px] text-[var(--dim)]">
+          {thought}
         </div>
       ) : null}
-      {project.milestones.length === 3 && project.status !== "planning" ? (
+
+      <div className="mt-7 min-h-[52px]">
+        {name ? (
+          <div className="font-display cc-fade text-[clamp(2rem,7vw,3rem)] font-extrabold uppercase leading-none">
+            {name}
+          </div>
+        ) : null}
+      </div>
+
+      {summary ? (
+        <div className="cc-fade mt-2 max-w-[560px] text-[13px] leading-5 text-[var(--dim)]">
+          {summary}
+        </div>
+      ) : null}
+
+      <div className="mt-6 grid gap-[5px]">
+        {[0, 1, 2].map((index) => {
+          const milestone = milestones[index];
+          if (!milestone) {
+            return (
+              <div key={index} className="cc-plan-row-empty">
+                <span>{index + 1}</span>
+                <i />
+              </div>
+            );
+          }
+          return (
+            <div
+              key={`${milestone.title}-${index}`}
+              className={`cc-milestone cc-fade ${index === 0 ? "cc-next" : "opacity-60"}`}
+            >
+              <span className="font-data text-[10px] text-[var(--dimmer)]">
+                {index + 1}
+              </span>
+              <span className="text-sm leading-[1.35]">{milestone.title}</span>
+              <span className="font-data text-[10px] text-[var(--dimmer)]">
+                {(
+                  (milestone.costCredits * lamportsPerCredit) /
+                  SOL_LAMPORTS
+                ).toFixed(3)}{" "}
+                SOL
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {project &&
+      project.milestones.length === 3 &&
+      project.status !== "planning" ? (
         <a
           id="crowdclaw-created-project-link"
           className="sr-only"
@@ -165,7 +227,28 @@ function Planning({
   );
 }
 
+function planStage(input: {
+  project: Project | null;
+  creating: boolean;
+  name: string;
+  summary: string;
+  milestones: number;
+}): string {
+  if (!input.project) return input.creating ? "ASSIGNING" : "READY";
+  if (input.project.status === "planning" && input.project.retryAt > Date.now())
+    return input.project.agentNote || "BUSY";
+  if (input.project.status === "failed")
+    return publicErrorLabel(input.project.error || input.project.agentNote);
+  if (input.project.error && !input.project.currentRunId)
+    return publicErrorLabel(input.project.error);
+  if (input.milestones >= 3) return "READY";
+  if (input.milestones > 0) return `${input.milestones} / 3`;
+  if (input.summary || input.name) return "PLAN";
+  return input.project.currentRunId ? "THINKING" : "ASSIGNING";
+}
+
 function parsePlan(text: string): {
+  thought: string;
   name: string;
   summary: string;
   milestones: Array<{ title: string; costCredits: number }>;
@@ -174,6 +257,11 @@ function parsePlan(text: string): {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const thought =
+    lines
+      .find((line) => line.startsWith("T|"))
+      ?.slice(2)
+      .trim() || "";
   const name =
     lines
       .find((line) => line.startsWith("N|"))
@@ -194,7 +282,7 @@ function parsePlan(text: string): {
       };
     })
     .filter((item) => item.title);
-  return { name, summary, milestones };
+  return { thought, name, summary, milestones };
 }
 
 function shortStatus(status: Project["status"]): string {

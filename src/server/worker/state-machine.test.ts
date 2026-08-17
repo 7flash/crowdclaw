@@ -9,7 +9,7 @@ describe("per-project agent lifecycle", () => {
       "utf8",
     );
     const planning = source.indexOf('snapshot.status === "planning"');
-    const funding = source.indexOf('measure("funding.sync"');
+    const funding = source.indexOf('start: () => "Refresh funding"');
     expect(planning).toBeGreaterThan(-1);
     expect(funding).toBeGreaterThan(-1);
     expect(planning).toBeLessThan(funding);

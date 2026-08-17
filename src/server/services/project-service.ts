@@ -9,41 +9,79 @@ function projectId(): string {
 
 export async function createProject(idea: string): Promise<Project> {
   const id = projectId();
-  const project = await measure("project.create", async () => {
-    const walletAddress = await measure("wallet.create", () =>
-      createProjectWallet(id),
-    );
-    if (!walletAddress) throw new Error("failed to provision project wallet");
-    const created = await measure("db.project.create", () =>
-      projectsRepository.create({ projectId: id, idea, walletAddress }),
-    );
-    if (!created) throw new Error("failed to persist project");
-    await measure("db.event.created", () =>
-      projectsRepository.event(
-        id,
-        "project.created",
-        "Idea created; autonomous agent assigned.",
-      ),
-    );
-    await measure("db.event.wallet", () =>
-      projectsRepository.event(
-        id,
-        "wallet.created",
-        `Funding wallet ${walletAddress} created.`,
-      ),
-    );
-    return created;
-  });
-  if (!project) throw new Error("project creation failed");
-  return project;
+  return await measure(
+    {
+      start: () => "Create project",
+      end: (project: Project) => ({
+        projectId: project.id,
+        status: project.status,
+      }),
+      projectId: id,
+    },
+    async () => {
+      const walletAddress = await measure(
+        {
+          start: () => "Create wallet",
+          end: (address: string) => ({ address }),
+          projectId: id,
+        },
+        () => createProjectWallet(id),
+      );
+      if (!walletAddress) throw new Error("failed to provision project wallet");
+
+      const created = await measure(
+        {
+          start: () => "Persist project",
+          end: (project: Project) => ({ projectId: project.id }),
+          projectId: id,
+        },
+        () => projectsRepository.create({ projectId: id, idea, walletAddress }),
+      );
+      if (!created) throw new Error("failed to persist project");
+
+      await measure(
+        {
+          start: () => "Event project.created",
+          end: () => ({ ok: true }),
+          projectId: id,
+        },
+        () =>
+          projectsRepository.event(
+            id,
+            "project.created",
+            "Idea created; autonomous agent assigned.",
+          ),
+      );
+      await measure(
+        {
+          start: () => "Event wallet.created",
+          end: () => ({ ok: true }),
+          projectId: id,
+        },
+        () =>
+          projectsRepository.event(
+            id,
+            "wallet.created",
+            `Funding wallet ${walletAddress} created.`,
+          ),
+      );
+      return created;
+    },
+  );
 }
 
 export async function getProjectBundle(
   projectId: string,
 ): Promise<ProjectBundle | null> {
-  return await measure("project.bundle", async () => {
-    return await measure("db.project.bundle", () =>
-      projectsRepository.bundle(projectId),
-    );
-  });
+  return await measure(
+    {
+      start: () => "Project bundle",
+      end: (bundle: ProjectBundle | null) => ({
+        found: Boolean(bundle),
+        status: bundle?.project.status || null,
+      }),
+      projectId,
+    },
+    () => projectsRepository.bundle(projectId),
+  );
 }

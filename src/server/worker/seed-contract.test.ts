@@ -13,7 +13,7 @@ describe("first milestone sponsorship", () => {
       "utf8",
     );
     expect(repo).toContain('"queued" : "seeding"');
-    expect(agent).toContain('measure("project.seed"');
+    expect(agent).toContain('start: () => "Seed project"');
     expect(agent).toContain("ensureFirstMilestoneSeed");
   });
 

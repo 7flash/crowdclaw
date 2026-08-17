@@ -4,22 +4,37 @@ import { projectsRepository } from "../../../src/server/db/project-repository";
 import { json, jsonBody } from "../../../src/server/http";
 import { log } from "../../../src/server/log";
 import { createProject } from "../../../src/server/services/project-service";
-import { ensureProjectAgent } from "../../../src/server/agents/process-manager";
+import { startProjectAgent } from "../../../src/server/agents/process-manager";
 
 const CreateBody = z.object({ idea: z.string().trim().min(10).max(2000) });
 
 export async function GET() {
-  const projects = await measure("api.projects.list", () =>
-    measure("db.projects.list", () => projectsRepository.list()),
+  const projects = await measure(
+    {
+      start: () => "List projects",
+      end: (items: ReturnType<typeof projectsRepository.list>) => ({
+        count: items.length,
+      }),
+    },
+    () => projectsRepository.list(),
   );
-  return json(projects || []);
+  return json(projects);
 }
 
 export async function POST(request: Request) {
   try {
     const { idea } = CreateBody.parse(await jsonBody(request));
-    const project = await createProject(idea);
-    await measure("agent.process.ensure", () => ensureProjectAgent(project.id));
+    const project = await measure(
+      {
+        start: () => "Create idea",
+        end: (value: Awaited<ReturnType<typeof createProject>>) => ({
+          projectId: value.id,
+          status: value.status,
+        }),
+      },
+      () => createProject(idea),
+    );
+    startProjectAgent(project.id);
     return json({ project }, 201);
   } catch (error) {
     const message =

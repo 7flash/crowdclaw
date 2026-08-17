@@ -8,9 +8,11 @@ describe("per-project bgrun agents", () => {
       "src/server/agents/process-manager.ts",
       "utf8",
     );
-    expect(route).toContain("ensureProjectAgent(project.id)");
+    expect(route).toContain("startProjectAgent(project.id)");
     expect(manager).toContain("handleRun({");
     expect(manager).toContain("bun project-agent.ts ${projectId}");
+    expect(manager).not.toContain("process.execPath");
+    expect(manager).toContain("readFileTail");
   });
 
   test("web no longer embeds the shared worker", () => {

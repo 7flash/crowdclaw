@@ -29,6 +29,7 @@ body {
 }
 button, input, textarea { font-family:inherit; color:inherit; }
 :focus-visible { outline:2px solid var(--mint); outline-offset:3px; }
+.cc-box textarea:focus-visible { outline:none; }
 button:disabled { opacity:.28; cursor:not-allowed; }
 
 .font-display { font-family:var(--display); }
@@ -55,7 +56,7 @@ button:disabled { opacity:.28; cursor:not-allowed; }
   box-shadow:0 24px 64px -32px #000;
   transition:border-color .2s, box-shadow .2s;
 }
-.cc-box:focus-within { border-color:var(--claw); box-shadow:0 28px 64px -28px rgba(255,92,43,.4); }
+.cc-box:focus-within { border-color:var(--claw); box-shadow:0 18px 48px -30px rgba(255,92,43,.38); }
 
 .cc-btn {
   font-family:var(--mono);
@@ -284,3 +285,180 @@ button:disabled { opacity:.28; cursor:not-allowed; }
   border-bottom:1px solid var(--line);
 }
 .cc-supporter-row:last-child { border-bottom:0; }
+
+/* Home planning: progress is legible even when motion is reduced. */
+.cc-plan-signal {
+  width:7px;
+  height:7px;
+  flex:0 0 auto;
+  border-radius:999px;
+  background:var(--claw);
+  box-shadow:0 0 0 4px rgba(255,92,43,.08);
+  animation:cc-breathe 1.4s ease-in-out infinite;
+}
+.cc-plan-track {
+  width:min(350px,78%);
+  height:3px;
+  overflow:hidden;
+  border-radius:99px;
+  background:#16252c;
+}
+.cc-plan-track span {
+  display:block;
+  height:100%;
+  min-width:3px;
+  border-radius:99px;
+  background:var(--claw);
+  transition:width .42s cubic-bezier(.2,.85,.3,1);
+}
+.cc-plan-row-empty {
+  display:grid;
+  grid-template-columns:24px 1fr;
+  gap:12px;
+  align-items:center;
+  height:44px;
+  padding:0 12px;
+  border:1px solid var(--line);
+  border-radius:7px;
+  color:var(--dimmer);
+  font-family:var(--mono);
+  font-size:10px;
+  opacity:.44;
+}
+.cc-plan-row-empty i {
+  display:block;
+  width:36%;
+  height:2px;
+  border-radius:99px;
+  background:#25363e;
+}
+
+/* first-run handoff: funding is the first visible project action */
+@keyframes cc-seed-packet {
+  0% { left:0; opacity:.2; transform:scale(.75); }
+  18% { opacity:1; }
+  82% { opacity:1; }
+  100% { left:calc(100% - 8px); opacity:.2; transform:scale(1); }
+}
+@keyframes cc-seed-glow {
+  0%,100% { opacity:.18; transform:translate3d(-8%,0,0) scale(.9); }
+  50% { opacity:.42; transform:translate3d(10%,0,0) scale(1.08); }
+}
+.cc-seed-surface {
+  position:relative;
+  overflow:hidden;
+  background:#071013;
+}
+.cc-seed-glow {
+  position:absolute;
+  inset:20% 15%;
+  border-radius:999px;
+  background:radial-gradient(circle,rgba(79,227,193,.13),transparent 68%);
+  filter:blur(16px);
+  animation:cc-seed-glow 2.2s ease-in-out infinite;
+}
+.cc-seed-track {
+  position:relative;
+  display:block;
+  height:1px;
+  overflow:visible;
+  background:linear-gradient(90deg,rgba(255,92,43,.25),rgba(79,227,193,.35));
+}
+.cc-seed-track::before,
+.cc-seed-track::after {
+  content:'';
+  position:absolute;
+  top:50%;
+  width:5px;
+  height:5px;
+  margin-top:-2px;
+  border-radius:999px;
+}
+.cc-seed-track::before { left:0; background:var(--claw); }
+.cc-seed-track::after { right:0; background:var(--mint); }
+.cc-seed-packet {
+  position:absolute;
+  top:50%;
+  left:0;
+  width:8px;
+  height:8px;
+  margin-top:-4px;
+  border-radius:999px;
+  background:var(--claw);
+  box-shadow:0 0 16px rgba(255,92,43,.55);
+  animation:cc-seed-packet 1.25s cubic-bezier(.4,0,.2,1) infinite;
+}
+.cc-seed-packet-sent {
+  background:var(--mint);
+  box-shadow:0 0 16px rgba(79,227,193,.55);
+  animation-duration:.85s;
+}
+
+
+/* 4.13 — one cinematic project rail instead of dashboard cards */
+.cc-live-rail {
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  border-bottom:1px solid var(--line);
+}
+.cc-live-cell {
+  min-width:0;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  min-height:46px;
+  padding:0 2px;
+}
+.cc-live-cell + .cc-live-cell {
+  border-left:1px solid var(--line);
+  padding-left:16px;
+}
+.cc-rail-meter {
+  position:relative;
+  flex:1;
+  min-width:24px;
+  height:2px;
+  overflow:hidden;
+  border-radius:99px;
+  background:#17252B;
+}
+.cc-rail-meter i {
+  display:block;
+  height:100%;
+  border-radius:99px;
+  background:var(--claw);
+  transition:width .35s ease;
+}
+.cc-community-block { min-width:0; }
+.cc-cinema-feed {
+  display:grid;
+  gap:7px;
+  font-family:var(--log);
+  font-size:10px;
+  line-height:1.35;
+  color:var(--dimmer);
+}
+.cc-cinema-line {
+  position:relative;
+  overflow:hidden;
+  padding-left:14px;
+  white-space:nowrap;
+  text-overflow:ellipsis;
+  opacity:.46;
+  animation:cc-rise .24s ease-out backwards;
+}
+.cc-cinema-line::before {
+  content:'·';
+  position:absolute;
+  left:0;
+  color:#344850;
+}
+.cc-cinema-current {
+  color:var(--bone);
+  opacity:1;
+}
+.cc-cinema-current::before { color:var(--claw); }
+@media (max-width:720px) {
+  .cc-live-rail { grid-template-columns:1fr; }
+  .cc-live-cell + .cc-live-cell { border-left:0; border-top:1px solid var(--line); padding-left:2px; }
+}

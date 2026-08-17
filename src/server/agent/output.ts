@@ -1,53 +1,12 @@
 import type { Milestone } from "../../shared/types";
 
-export type ParsedAgentOutput = {
-  name: string;
-  summary: string;
-  notes: string[];
-  milestones: Array<{ title: string; costCredits: number }>;
-  code: string;
-};
-
-export function parseAgentOutput(text: string): ParsedAgentOutput {
-  const cut = text.indexOf("CODE|");
-  const head = cut === -1 ? text : text.slice(0, cut);
-  const rows = head
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const one = (prefix: string) => {
-    const line = rows.find((item) => item.startsWith(prefix));
-    return line ? line.slice(2).trim() : "";
-  };
-  const notes = rows
-    .filter((line) => line.startsWith("T|"))
-    .map((line) => line.slice(2).trim())
-    .filter(Boolean);
-  const milestones = rows
-    .filter((line) => line.startsWith("M|"))
-    .map((line) => {
-      const bits = line.slice(2).split("|");
-      const cost = Number.parseInt(bits[1] || "", 10);
-      return {
-        title: (bits[0] || "").trim(),
-        costCredits: Math.max(1, Math.min(4, Number.isFinite(cost) ? cost : 2)),
-      };
-    })
-    .filter((item) => item.title);
-  let code = cut === -1 ? "" : text.slice(cut + 5).trim();
-  code = code
-    .replace(/^```html?\s*/i, "")
-    .replace(/```\s*$/, "")
-    .trim();
-  return { name: one("N|"), summary: one("S|"), notes, milestones, code };
-}
-
 export function toMilestone(
-  input: { title: string; costCredits: number },
+  input: { title: string; goal?: string; costCredits: number },
   createdAt = Date.now(),
 ): Milestone {
   return {
     title: input.title,
+    goal: input.goal || "",
     costCredits: input.costCredits,
     state: "queued",
     createdAt,

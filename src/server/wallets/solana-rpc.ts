@@ -56,20 +56,33 @@ async function rpc<T>(method: string, params: unknown[]): Promise<T> {
 }
 
 export async function getBalanceLamports(address: string): Promise<number> {
-  const result = await measure("solana.balance", async () => {
-    const body = await measure("rpc.getBalance", () =>
-      rpc<{ value?: number }>("getBalance", [
-        address,
-        { commitment: "confirmed" },
-      ]),
-    );
-    const value = body?.value;
-    if (!Number.isFinite(value) || (value as number) < 0)
-      throw new Error("Solana RPC returned an invalid balance");
-    return Math.floor(value as number);
-  });
-  if (result == null) throw new Error("failed to read project wallet balance");
-  return result;
+  return await measure(
+    {
+      start: () => "Solana balance",
+      end: (value: number) => ({ lamports: value }),
+      address,
+    },
+    async () => {
+      const body = await measure(
+        {
+          start: () => "RPC getBalance",
+          end: (value: { value?: number }) => ({
+            lamports: value?.value ?? null,
+          }),
+          method: "getBalance",
+        },
+        () =>
+          rpc<{ value?: number }>("getBalance", [
+            address,
+            { commitment: "confirmed" },
+          ]),
+      );
+      const value = body?.value;
+      if (!Number.isFinite(value) || (value as number) < 0)
+        throw new Error("Solana RPC returned an invalid balance");
+      return Math.floor(value as number);
+    },
+  );
 }
 
 export async function getRecentInboundTransfers(
@@ -77,41 +90,63 @@ export async function getRecentInboundTransfers(
   knownSignatures: ReadonlySet<string>,
   limit = 24,
 ): Promise<InboundTransfer[]> {
-  const result = await measure("solana.inbound-transfers", async () => {
-    const signatures = await measure("rpc.getSignaturesForAddress", () =>
-      rpc<SignatureInfo[]>("getSignaturesForAddress", [
-        address,
-        { limit: Math.max(1, Math.min(50, limit)), commitment: "confirmed" },
-      ]),
-    );
-    const candidates = (signatures || [])
-      .filter(
-        (item) =>
-          item &&
-          !item.err &&
-          item.signature &&
-          !knownSignatures.has(item.signature),
-      )
-      .slice(0, 12);
-
-    const transfers: InboundTransfer[] = [];
-    for (const item of candidates) {
-      const tx = await measure("rpc.getTransaction", () =>
-        rpc<TransactionResult>("getTransaction", [
-          item.signature,
-          {
-            commitment: "confirmed",
-            encoding: "jsonParsed",
-            maxSupportedTransactionVersion: 0,
-          },
-        ]),
+  return await measure(
+    {
+      start: () => "Index inbound SOL",
+      end: (items: InboundTransfer[]) => ({ transfers: items.length }),
+      address,
+    },
+    async () => {
+      const signatures = await measure(
+        {
+          start: () => "RPC signatures",
+          end: (items: SignatureInfo[]) => ({ signatures: items?.length || 0 }),
+          method: "getSignaturesForAddress",
+        },
+        () =>
+          rpc<SignatureInfo[]>("getSignaturesForAddress", [
+            address,
+            {
+              limit: Math.max(1, Math.min(50, limit)),
+              commitment: "confirmed",
+            },
+          ]),
       );
-      const transfer = inboundFromTransaction(address, item, tx);
-      if (transfer) transfers.push(transfer);
-    }
-    return transfers;
-  });
-  return result || [];
+      const candidates = (signatures || [])
+        .filter(
+          (item) =>
+            item &&
+            !item.err &&
+            item.signature &&
+            !knownSignatures.has(item.signature),
+        )
+        .slice(0, 12);
+
+      const transfers: InboundTransfer[] = [];
+      for (const item of candidates) {
+        const tx = await measure(
+          {
+            start: () => "RPC transaction",
+            end: (value: TransactionResult) => ({ found: Boolean(value) }),
+            method: "getTransaction",
+            signature: item.signature,
+          },
+          () =>
+            rpc<TransactionResult>("getTransaction", [
+              item.signature,
+              {
+                commitment: "confirmed",
+                encoding: "jsonParsed",
+                maxSupportedTransactionVersion: 0,
+              },
+            ]),
+        );
+        const transfer = inboundFromTransaction(address, item, tx);
+        if (transfer) transfers.push(transfer);
+      }
+      return transfers;
+    },
+  );
 }
 
 export function inboundFromTransaction(

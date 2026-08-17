@@ -34,12 +34,8 @@ export default function mount() {
           }}
           lamportsPerCredit={state.lamportsPerCredit}
           onCreate={() => void create()}
+          error={state.error}
         />
-        {state.error ? (
-          <div className="mx-auto -mt-8 max-w-[700px] px-5 pb-10 text-xs text-[var(--claw)]">
-            {state.error}
-          </div>
-        ) : null}
       </>,
       root,
     );
@@ -64,7 +60,7 @@ export default function mount() {
           "crowdclaw-created-project-link",
         ) as HTMLAnchorElement | null
       )?.click();
-    }, 520);
+    }, 260);
   };
 
   const applyPlanningBundle = (bundle: ProjectBundle) => {
@@ -74,11 +70,12 @@ export default function mount() {
       bundle.project,
       ...state.projects.filter((item) => item.id !== bundle.project.id),
     ];
-    state.error =
-      bundle.project.status === "failed"
-        ? bundle.project.error || "planning failed"
-        : null;
+    state.error = null;
     draw();
+    if (bundle.project.status === "failed") {
+      stopPlanningStream();
+      return;
+    }
     if (
       bundle.project.milestones.length === 3 &&
       bundle.project.status !== "planning"

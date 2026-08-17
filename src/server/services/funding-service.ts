@@ -15,13 +15,43 @@ export async function syncProjectFunding(
   if (!force && Date.now() - project.lastFundingSyncAt < fundingSyncMs())
     return project;
 
-  try {
-    const result = await measure("funding.sync", async () => {
-      const lamports = await measure("wallet.balance", () =>
-        getBalanceLamports(project.walletAddress),
+  return await measure(
+    {
+      start: () => "Funding sync",
+      end: (value: Project) => ({
+        status: value.status,
+        onchainLamports: value.onchainLamports,
+        availableCredits: value.availableCredits,
+      }),
+      projectId: project.id,
+      wallet: project.walletAddress,
+      catch: (error) => {
+        const message =
+          error instanceof Error
+            ? error.message
+            : String(error || "funding sync failed");
+        projectsRepository.setFundingError(project.id, message);
+        return projectsRepository.get(project.id) || project;
+      },
+    },
+    async () => {
+      const lamports = await measure(
+        {
+          start: () => "Wallet balance",
+          end: (value: number) => ({ lamports: value }),
+          wallet: project.walletAddress,
+        },
+        () => getBalanceLamports(project.walletAddress),
       );
-      const stored = await measure("db.funding.store", () =>
-        projectsRepository.setFunding(project.id, lamports),
+      const stored = await measure(
+        {
+          start: () => "Store funding",
+          end: (value: ReturnType<typeof projectsRepository.setFunding>) => ({
+            credited: value?.newlyCreditedLamports || 0,
+          }),
+          projectId: project.id,
+        },
+        () => projectsRepository.setFunding(project.id, lamports),
       );
       if (!stored) throw new Error("project disappeared during funding sync");
 
@@ -29,11 +59,25 @@ export async function syncProjectFunding(
         const known = new Set(
           projectsRepository.donationSignatures(project.id, 200),
         );
-        const transfers = await measure("wallet.inbound.index", () =>
-          getRecentInboundTransfers(project.walletAddress, known),
+        const transfers = await measure(
+          {
+            start: () => "Inbound transfers",
+            end: (
+              items: Awaited<ReturnType<typeof getRecentInboundTransfers>>,
+            ) => ({ count: items.length }),
+            projectId: project.id,
+          },
+          () => getRecentInboundTransfers(project.walletAddress, known),
         );
-        const inserted = await measure("db.donations.store", () =>
-          projectsRepository.recordDonations(project.id, transfers),
+        const inserted = await measure(
+          {
+            start: () => "Store donations",
+            end: (
+              items: ReturnType<typeof projectsRepository.recordDonations>,
+            ) => ({ count: items.length }),
+            projectId: project.id,
+          },
+          () => projectsRepository.recordDonations(project.id, transfers),
         );
         for (const donation of inserted) {
           projectsRepository.event(
@@ -49,24 +93,17 @@ export async function syncProjectFunding(
         });
       }
 
-      return stored;
-    });
-    if (!result) return project;
-    if (result.newlyCreditedLamports > 0) {
-      const credits = result.newlyCreditedLamports / lamportsPerCredit();
-      projectsRepository.event(
-        project.id,
-        "funding.confirmed",
-        `Confirmed +${credits.toFixed(2)} build credits from the project wallet.`,
-      );
-    }
-    return result.project;
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "funding sync failed";
-    projectsRepository.setFundingError(project.id, message);
-    return projectsRepository.get(project.id) || project;
-  }
+      if (stored.newlyCreditedLamports > 0) {
+        const credits = stored.newlyCreditedLamports / lamportsPerCredit();
+        projectsRepository.event(
+          project.id,
+          "funding.confirmed",
+          `Confirmed +${credits.toFixed(2)} build credits from the project wallet.`,
+        );
+      }
+      return stored.project;
+    },
+  );
 }
 
 function short(address: string): string {

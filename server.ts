@@ -1,3 +1,4 @@
+import { measure } from "measure-fn";
 import { serve } from "tradjs/server";
 import {
   agentSupervisorMs,
@@ -6,7 +7,9 @@ import {
 } from "./src/server/config";
 import { reconcileProjectAgents } from "./src/server/agents/process-manager";
 import { log } from "./src/server/log";
+import { getBalanceLamports } from "./src/server/wallets/solana-rpc";
 import { getTreasuryWallet } from "./src/server/wallets/solard";
+import { SOL_LAMPORTS } from "./src/shared/constants";
 
 assertRuntimeConfig("web");
 
@@ -28,11 +31,45 @@ const port = Number(process.env.PORT || process.env.BUN_PORT || 3000);
 log("info", "server.starting", { port });
 
 if (treasurySeedEnabled()) {
-  const treasury = await getTreasuryWallet();
+  const treasury = await measure(
+    {
+      start: () => "Treasury wallet",
+      end: (wallet: { name: string; address: string }) => wallet,
+    },
+    () => getTreasuryWallet(),
+  );
+
+  const balanceLamports = await measure(
+    {
+      start: () => "Treasury balance",
+      end: (lamports: number | null) =>
+        lamports == null
+          ? { available: false }
+          : {
+              lamports,
+              sol: lamports / SOL_LAMPORTS,
+            },
+      address: treasury.address,
+      catch: (error) => {
+        log("warn", "treasury.balance_unavailable", {
+          address: treasury.address,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      },
+    },
+    () => getBalanceLamports(treasury.address),
+  );
+
   log("info", "treasury.ready", {
     name: treasury.name,
     address: treasury.address,
+    balanceLamports: balanceLamports,
+    balanceSol: balanceLamports == null ? null : balanceLamports / SOL_LAMPORTS,
   });
+  if (balanceLamports === 0) {
+    log("warn", "treasury.empty", { address: treasury.address });
+  }
 }
 
 await reconcileProjectAgents();

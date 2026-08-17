@@ -5,6 +5,7 @@ import { databasePath } from "../config";
 
 const MilestoneSchema = z.object({
   title: z.string(),
+  goal: z.string().default(""),
   costCredits: z.number(),
   state: z.enum(["queued", "working", "shipped"]),
   createdAt: z.number().int(),
@@ -71,6 +72,7 @@ const RunSchema = z.object({
   model: z.string(),
   inputTokens: z.number().int().default(0),
   outputTokens: z.number().int().default(0),
+  thinkingTokens: z.number().int().default(0),
   cacheCreationInputTokens: z.number().int().default(0),
   cacheReadInputTokens: z.number().int().default(0),
   lastContextTokens: z.number().int().default(0),
