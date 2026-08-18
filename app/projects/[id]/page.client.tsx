@@ -457,6 +457,25 @@ export default function mount({ params }: { params: Record<string, string> }) {
       }
     },
 
+    async retryBuild() {
+      if (state.bundle.project.status !== "failed") return;
+      try {
+        state.error = null;
+        const project = await api.retryProject(projectId);
+        state.bundle = { ...state.bundle, project };
+        state.selectedVersion = null;
+        state.tab = "play";
+        draw();
+        await refresh(false);
+        toast(
+          project.status === "waiting_funds" ? "WAITING FOR FUNDS" : "RETRYING",
+        );
+      } catch (error) {
+        state.error = message(error);
+        draw();
+      }
+    },
+
     async devFund() {
       try {
         await api.devFund(projectId, 2);

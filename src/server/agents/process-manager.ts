@@ -1,5 +1,12 @@
 import { resolve } from "node:path";
-import { handleRun, getProcess, isProcessRunning } from "bgrun";
+import {
+  handleRun,
+  getAllProcesses,
+  getProcess,
+  isProcessRunning,
+  readFileTail,
+  terminateProcess,
+} from "bgrun";
 import { measure } from "measure-fn";
 import { projectsRepository } from "../db/project-repository";
 import { errorMessage, log } from "../log";
@@ -10,6 +17,7 @@ const ID = /^p_[a-z0-9]+_[a-z0-9]+$/i;
 type ProjectAgentPhase = "plan" | "build";
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 let reconciling = false;
+const adminStopped = new Set<string>();
 
 export type ProjectAgentProcess = {
   name: string;
@@ -120,6 +128,8 @@ export async function ensureProjectAgent(
   if (!project) throw new Error("project not found");
   const phase = phaseForStatus(project.status);
   const name = projectAgentName(projectId, phase);
+
+  if (adminStopped.has(name)) return { name, pid: 0, running: false };
 
   // Planning and building use different bgrun process names. The planning worker
   // exits after publishing an awaiting_start roadmap. Reusing that just-stopped
@@ -349,6 +359,8 @@ export async function reconcileProjectAgents(): Promise<void> {
           !["awaiting_start", "completed", "failed"].includes(project.status),
       );
     for (const project of active) {
+      const name = projectAgentName(project.id, phaseForStatus(project.status));
+      if (adminStopped.has(name)) continue;
       try {
         await ensureProjectAgent(project.id);
       } catch (error) {
@@ -361,6 +373,143 @@ export async function reconcileProjectAgents(): Promise<void> {
   } finally {
     reconciling = false;
   }
+}
+
+export type AdminAgentProcess = {
+  name: string;
+  projectId: string;
+  phase: ProjectAgentPhase | "legacy";
+  pid: number;
+  running: boolean;
+  stoppedByAdmin: boolean;
+  command: string;
+  directory: string;
+  startedAt: number;
+};
+
+function projectIdFromAgentName(name: string): string {
+  const modern = name.match(
+    /^crowdclaw-agent-(p_[a-z0-9]+_[a-z0-9]+)-(?:plan|build)$/i,
+  );
+  if (modern) return modern[1];
+  const legacy = name.match(/^crowdclaw-agent-(p_[a-z0-9]+_[a-z0-9]+)$/i);
+  return legacy?.[1] || "";
+}
+
+function phaseFromAgentName(name: string): ProjectAgentPhase | "legacy" {
+  if (/-plan$/i.test(name)) return "plan";
+  if (/-build$/i.test(name)) return "build";
+  return "legacy";
+}
+
+function assertAgentName(name: string): void {
+  if (!name.startsWith(PREFIX) || !projectIdFromAgentName(name))
+    throw new Error("invalid CrowdClaw agent name");
+}
+
+export async function listAdminAgents(): Promise<AdminAgentProcess[]> {
+  const rows = getAllProcesses().filter((proc: any) =>
+    String(proc?.name || "").startsWith(PREFIX),
+  );
+  const items = await Promise.all(
+    rows.map(async (proc: any) => {
+      const name = String(proc.name || "");
+      const pid = Number(proc.pid || 0);
+      return {
+        name,
+        projectId: projectIdFromAgentName(name),
+        phase: phaseFromAgentName(name),
+        pid,
+        running: pid > 0 ? await isProcessRunning(pid) : false,
+        stoppedByAdmin: adminStopped.has(name),
+        command: String(proc.command || ""),
+        directory: String(proc.directory || ""),
+        startedAt: Number(proc.timestamp || proc.created_at || 0),
+      } satisfies AdminAgentProcess;
+    }),
+  );
+  return items.sort(
+    (a: AdminAgentProcess, b: AdminAgentProcess) =>
+      b.startedAt - a.startedAt || a.name.localeCompare(b.name),
+  );
+}
+
+export async function readAdminAgentLogs(
+  name: string,
+  lines = 160,
+): Promise<{ stdout: string; stderr: string }> {
+  assertAgentName(name);
+  const proc = getProcess(name) as any;
+  if (!proc) throw new Error("agent not found");
+  const safeLines = Math.max(20, Math.min(500, Math.floor(lines || 160)));
+  const tail = async (path: unknown) => {
+    if (typeof path !== "string" || !path) return "";
+    try {
+      return String((await readFileTail(path, safeLines)) || "");
+    } catch {
+      return "";
+    }
+  };
+  const [stdout, stderr] = await Promise.all([
+    tail(proc.stdout_path),
+    tail(proc.stderr_path),
+  ]);
+  return { stdout, stderr };
+}
+
+export async function stopAdminAgent(name: string): Promise<void> {
+  assertAgentName(name);
+  adminStopped.add(name);
+  const proc = getProcess(name) as any;
+  const pid = Number(proc?.pid || 0);
+  if (pid > 0 && (await isProcessRunning(pid))) await terminateProcess(pid);
+  const projectId = projectIdFromAgentName(name);
+  if (projectId) projectsRepository.recoverProjectWork(projectId, true);
+  log("info", "agent.admin.stopped", { name, projectId, pid });
+}
+
+export async function restartAdminAgent(
+  name: string,
+): Promise<ProjectAgentProcess> {
+  assertAgentName(name);
+  const projectId = projectIdFromAgentName(name);
+  const proc = getProcess(name) as any;
+  const pid = Number(proc?.pid || 0);
+  adminStopped.delete(name);
+  if (pid > 0 && (await isProcessRunning(pid))) {
+    await terminateProcess(pid);
+    await Bun.sleep(120);
+  }
+  if (projectId) {
+    projectsRepository.recoverProjectWork(projectId, true);
+    const project = projectsRepository.get(projectId);
+    if (
+      project &&
+      !["awaiting_start", "completed", "failed"].includes(project.status)
+    )
+      return ensureProjectAgent(projectId);
+  }
+
+  if (!proc) throw new Error("agent not found");
+  await handleRun({
+    action: "run",
+    name,
+    command: String(proc.command || ""),
+    directory: String(proc.directory || PROJECT_ROOT),
+    force: false,
+    remoteName: "",
+  });
+  const restarted = getProcess(name) as any;
+  const nextPid = Number(restarted?.pid || 0);
+  return {
+    name,
+    pid: nextPid,
+    running: nextPid > 0 ? await isProcessRunning(nextPid) : false,
+  };
+}
+
+export function isAdminAgentStopped(name: string): boolean {
+  return adminStopped.has(name);
 }
 
 export async function bgrunHealth(): Promise<{

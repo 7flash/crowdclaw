@@ -48,6 +48,19 @@ export async function startProject(
   return body.project;
 }
 
+export async function retryProject(
+  id: string,
+  signal?: AbortSignal,
+): Promise<Project> {
+  const body = await readJson<{ project: Project }>(
+    await fetch(`/api/projects/${encodeURIComponent(id)}/retry`, {
+      method: "POST",
+      signal,
+    }),
+  );
+  return body.project;
+}
+
 export async function getProject(
   id: string,
   signal?: AbortSignal,

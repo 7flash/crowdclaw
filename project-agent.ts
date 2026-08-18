@@ -314,7 +314,7 @@ async function tick(): Promise<boolean> {
 }
 
 log("info", "agent.process.ready", {
-  version: "4.32.0",
+  version: "4.35.0",
   jsxAiVersion,
   projectId,
   pid: process.pid,

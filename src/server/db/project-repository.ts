@@ -387,6 +387,14 @@ export const projectsRepository = {
     return rows.map(projectFromRow);
   },
 
+  listHome(): Project[] {
+    return this.list().map((project) => ({
+      ...project,
+      tokensUsed: usageFromRuns(this.runs(project.id, 500), project)
+        .totalTokens,
+    }));
+  },
+
   get(projectId: string): Project | null {
     const row = rowByProjectId(projectId);
     return row ? projectFromRow(row) : null;
@@ -758,6 +766,51 @@ export const projectsRepository = {
       }
       row.error = "";
       row.retryAt = 0;
+      row.updatedAt = now();
+      result = projectFromRow(row);
+    });
+    return result;
+  },
+
+  retryFailed(projectId: string): Project | null {
+    let result: Project | null = null;
+    db.transaction(() => {
+      const row = rowByProjectId(projectId);
+      if (!row) return;
+      const project = projectFromRow(row);
+      if (project.status !== "failed") {
+        result = project;
+        return;
+      }
+
+      row.currentRunId = null;
+      row.reservedCredits = 0;
+      row.leaseOwner = "";
+      row.leaseUntil = 0;
+      row.failureCount = 0;
+      row.retryAt = 0;
+      row.error = "";
+      row.agentNote = "";
+      row.streamPreview = "";
+      row.streamUpdatedAt = now();
+      row.streamEventCount = 0;
+
+      const miles = [...project.milestones];
+      if (miles[project.done])
+        miles[project.done] = { ...miles[project.done], state: "queued" };
+      row.milestones = miles;
+
+      if (!miles.length) {
+        row.status = "planning";
+      } else {
+        const nextProject = projectFromRow(row);
+        const next = nextProject.milestones[nextProject.done];
+        row.status = !next
+          ? "completed"
+          : canQueueMilestone(nextProject, next)
+            ? "queued"
+            : "waiting_funds";
+      }
       row.updatedAt = now();
       result = projectFromRow(row);
     });

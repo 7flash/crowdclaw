@@ -12,11 +12,11 @@ export async function GET() {
   const projects = await measure(
     {
       start: () => "List projects",
-      end: (items: ReturnType<typeof projectsRepository.list>) => ({
+      end: (items: ReturnType<typeof projectsRepository.listHome>) => ({
         count: items.length,
       }),
     },
-    () => projectsRepository.list(),
+    () => projectsRepository.listHome(),
   );
   return json(projects);
 }

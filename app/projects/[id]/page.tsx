@@ -14,6 +14,7 @@ const actions: ProjectActions = {
   devFund: noop,
   share: noop,
   startBuild: noop,
+  retryBuild: noop,
   voteMilestone: noop,
   setProposalTitle: noop,
   setProposalGoal: noop,

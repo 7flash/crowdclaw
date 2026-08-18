@@ -27,6 +27,7 @@ export type ProjectViewProps = {
   onDevFund: () => void;
   onShare: () => void;
   onStartBuild: () => void;
+  onRetryBuild: () => void;
   onVoteMilestone: (milestoneKey: string) => void;
   onProposalTitle: (value: string) => void;
   onProposalGoal: (value: string) => void;
@@ -297,10 +298,13 @@ export function ProjectView(props: ProjectViewProps) {
         done={project.done}
         total={project.milestones.length}
         active={buildActive}
+        failed={project.status === "failed"}
+        error={project.error}
         liveSelected={liveSelected}
         liveSource={liveBuildPreview.source}
         currentVersion={currentArtifact?.version}
         onVersion={props.onVersion}
+        onRetry={props.onRetryBuild}
         onVoteMilestone={props.onVoteMilestone}
         proposalTitle={props.proposalTitle}
         proposalGoal={props.proposalGoal}
@@ -549,10 +553,13 @@ function Roadmap(props: {
   done: number;
   total: number;
   active: boolean;
+  failed: boolean;
+  error: string;
   liveSelected: boolean;
   liveSource: string;
   currentVersion?: number;
   onVersion: (version: number | null) => void;
+  onRetry: () => void;
   onVoteMilestone: (milestoneKey: string) => void;
   proposalTitle: string;
   proposalGoal: string;
@@ -619,7 +626,11 @@ function Roadmap(props: {
 
         {props.upcoming.map((mile, offset) => {
           const currentLive = offset === 0 && props.active;
+          const currentFailed = offset === 0 && props.failed;
           const currentSelected = currentLive && props.liveSelected;
+          const failureDetail = currentFailed
+            ? milestoneFailureDetail(props.error)
+            : "";
           const rowClass = `grid w-full grid-cols-[26px_minmax(0,1fr)_auto] items-start gap-3 rounded-[6px] border px-4 py-3 text-left ${offset === 0 ? (currentSelected ? "border-[rgba(83,224,193,.46)] bg-[rgba(83,224,193,.045)]" : "border-[rgba(255,92,43,.38)] bg-[rgba(255,92,43,.045)]") : "border-[var(--line)] bg-white/[.012]"}`;
           const row = (
             <>
@@ -648,8 +659,24 @@ function Roadmap(props: {
                     {mile.goal}
                   </span>
                 ) : null}
+                {failureDetail ? (
+                  <span
+                    className="mt-2 block font-data text-[9px] leading-4 text-[var(--claw)]"
+                    title={props.error}
+                  >
+                    {failureDetail}
+                  </span>
+                ) : null}
               </span>
-              {offset > 0 ? (
+              {currentFailed ? (
+                <button
+                  className="cc-mini min-w-[54px] whitespace-nowrap text-[var(--claw)]"
+                  onClick={props.onRetry}
+                  aria-label={`Retry ${mile.title}`}
+                >
+                  RETRY
+                </button>
+              ) : offset > 0 ? (
                 <button
                   className="cc-mini min-w-[54px] whitespace-nowrap"
                   onClick={() => props.onVoteMilestone(mile.key)}
@@ -752,6 +779,20 @@ function Roadmap(props: {
         </div>
       </details>
     </section>
+  );
+}
+
+function milestoneFailureDetail(error: string): string {
+  const compact = String(error || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!compact) return "Build failed.";
+  return (
+    compact
+      .replace(/^Milestone attempt ended before validated completion\.\s*/i, "")
+      .replace(/^Host validation:\s*/i, "")
+      .replace(/^artifact rejected:\s*/i, "")
+      .trim() || compact
   );
 }
 

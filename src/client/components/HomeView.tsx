@@ -1,4 +1,3 @@
-import { SOL_LAMPORTS } from "../../shared/constants";
 import { publicErrorLabel } from "../../shared/public-error";
 import type { Project } from "../../shared/types";
 import { BrandBar } from "./BrandBar";
@@ -98,16 +97,23 @@ export function HomeView(props: HomeViewProps) {
               <a
                 key={project.id}
                 href={`/projects/${encodeURIComponent(project.id)}`}
-                className="grid grid-cols-[1fr_auto_auto] items-center gap-4 border-b border-[var(--line)] px-2 py-4 text-left text-[var(--bone)] no-underline transition hover:bg-white/[.025]"
+                className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-5 border-b border-[var(--line)] px-2 py-4 text-left text-[var(--bone)] no-underline transition hover:bg-white/[.025]"
+                aria-label={`${project.name}, ${formatInteger(project.tokensUsed || 0)} tokens, ${project.done} of ${project.milestones.length} milestones`}
               >
-                <span className="font-data truncate text-[12px]">
-                  {project.name}
+                <span className="flex min-w-0 items-center gap-2.5">
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${project.status === "failed" ? "bg-[var(--claw)]" : project.status === "completed" ? "bg-[var(--mint)]" : "bg-[var(--dimmer)]"}`}
+                    aria-hidden="true"
+                  />
+                  <span className="font-data truncate text-[12px]">
+                    {project.name}
+                  </span>
                 </span>
-                <span className={`cc-status cc-status-${project.status}`}>
-                  {shortStatus(project.status)}
+                <span className="font-data whitespace-nowrap text-[10px] tabular-nums text-[var(--dim)]">
+                  {formatInteger(project.tokensUsed || 0)} TOK
                 </span>
-                <span className="font-data text-[10px] text-[var(--dim)]">
-                  {(project.onchainLamports / SOL_LAMPORTS).toFixed(4)} SOL
+                <span className="font-data min-w-[36px] text-right text-[10px] tabular-nums text-[var(--dim)]">
+                  {project.done}/{project.milestones.length || 0}
                 </span>
               </a>
             ))}
@@ -258,6 +264,10 @@ function Planning({
   );
 }
 
+function formatInteger(value: number): string {
+  return Math.max(0, Math.floor(Number(value) || 0)).toLocaleString("en-US");
+}
+
 function parsePlan(text: string): {
   assistant: string;
   thought: string;
@@ -321,18 +331,4 @@ function visibleRuntimeProgress(value: string): string {
   )
     return "";
   return message.slice(0, 160);
-}
-
-function shortStatus(status: Project["status"]): string {
-  if (status === "awaiting_start") return "START";
-  if (status === "seeding") return "STARTING";
-  if (status === "waiting_funds") return "PAUSED";
-  if (
-    status === "queued" ||
-    status === "working" ||
-    status === "validating" ||
-    status === "publishing"
-  )
-    return "BUILDING";
-  return status.toUpperCase();
 }

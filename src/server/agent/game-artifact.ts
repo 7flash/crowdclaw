@@ -62,6 +62,45 @@ const ENTRY_SOURCE = String.raw`import mount from "./game.tsx";
 let cleanup: void | (() => void);
 let restarting = false;
 let fitFrame = 0;
+let fitTimeout = 0;
+let resizeObserver: ResizeObserver | null = null;
+
+const contentBounds = (root: HTMLElement) => {
+  const rootRect = root.getBoundingClientRect();
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
+
+  // scrollWidth/scrollHeight miss negative overflow from centered grid/flex
+  // layouts. Measure rendered descendants so content that spills above or to
+  // the left is included too.
+  const nodes = Array.from(root.querySelectorAll<HTMLElement>("*"));
+  for (const node of nodes) {
+    if (node.tagName === "STYLE" || node.tagName === "SCRIPT") continue;
+    const rect = node.getBoundingClientRect();
+    if (!(rect.width > 0) || !(rect.height > 0)) continue;
+    minX = Math.min(minX, rect.left);
+    minY = Math.min(minY, rect.top);
+    maxX = Math.max(maxX, rect.right);
+    maxY = Math.max(maxY, rect.bottom);
+  }
+
+  if (!Number.isFinite(minX)) {
+    minX = rootRect.left;
+    minY = rootRect.top;
+    maxX = rootRect.right;
+    maxY = rootRect.bottom;
+  }
+
+  return {
+    rootRect,
+    left: minX,
+    top: minY,
+    width: Math.max(1, maxX - minX),
+    height: Math.max(1, maxY - minY),
+  };
+};
 
 const fitGame = () => {
   cancelAnimationFrame(fitFrame);
@@ -70,16 +109,40 @@ const fitGame = () => {
     if (!root) return;
 
     root.style.transform = "none";
-    const contentWidth = Math.max(root.scrollWidth, root.clientWidth, 1);
-    const contentHeight = Math.max(root.scrollHeight, root.clientHeight, 1);
+    const bounds = contentBounds(root);
     const inset = 20;
+    const availableWidth = Math.max(1, innerWidth - inset * 2);
+    const availableHeight = Math.max(1, innerHeight - inset * 2);
     const scale = Math.min(
       1,
-      Math.max(0.45, (innerWidth - inset * 2) / contentWidth),
-      Math.max(0.45, (innerHeight - inset * 2) / contentHeight),
+      availableWidth / bounds.width,
+      availableHeight / bounds.height,
     );
-    root.style.transform = "scale(" + scale + ")";
+
+    // Transform from the unscaled root coordinate system. Center the measured
+    // content bounds, not the root box, because generated games often use
+    // min-height:100% + place-items:center and can overflow symmetrically.
+    const localLeft = bounds.left - bounds.rootRect.left;
+    const localTop = bounds.top - bounds.rootRect.top;
+    const targetLeft = (innerWidth - bounds.width * scale) / 2;
+    const targetTop = (innerHeight - bounds.height * scale) / 2;
+    const tx = targetLeft - localLeft * scale;
+    const ty = targetTop - localTop * scale;
+    root.style.transform = "matrix(" + scale + ",0,0," + scale + "," + tx + "," + ty + ")";
   });
+};
+
+const observeFit = () => {
+  resizeObserver?.disconnect();
+  resizeObserver = typeof ResizeObserver === "undefined"
+    ? null
+    : new ResizeObserver(() => fitGame());
+  const root = document.getElementById("game-root");
+  if (!root || !resizeObserver) return;
+  resizeObserver.observe(root);
+  for (const child of Array.from(root.children)) {
+    if (child instanceof Element) resizeObserver.observe(child);
+  }
 };
 
 const restart = () => {
@@ -87,10 +150,16 @@ const restart = () => {
   restarting = true;
   try { if (typeof cleanup === "function") cleanup(); } catch {}
   const root = document.getElementById("game-root");
-  if (root) root.replaceChildren();
+  if (root) {
+    root.style.transform = "none";
+    root.replaceChildren();
+  }
   cleanup = mount();
+  observeFit();
   fitGame();
   requestAnimationFrame(fitGame);
+  clearTimeout(fitTimeout);
+  fitTimeout = setTimeout(fitGame, 180);
   restarting = false;
 };
 
@@ -125,6 +194,8 @@ addEventListener("pagehide", () => {
   removeEventListener("keydown", onHostRestartKey);
   removeEventListener("click", onHostRestartClick, true);
   removeEventListener("resize", fitGame);
+  resizeObserver?.disconnect();
+  clearTimeout(fitTimeout);
   cancelAnimationFrame(fitFrame);
   try { if (typeof cleanup === "function") cleanup(); } catch {}
   try { delete (globalThis as any).__crowdclawRestart; } catch {}
@@ -166,7 +237,7 @@ export async function compileGameHtml(source: string): Promise<string> {
     const js = (await output.text()).replace(/<\/script/gi, "<\\/script");
     const encodedSource = JSON.stringify(source).replace(/</g, "\\u003c");
 
-    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050a0c}body{display:grid;place-items:center;padding:20px}#game-root{width:100%;height:100%;overflow:visible;background:#050a0c;transform-origin:center center;will-change:transform}</style></head><body><div id="game-root"></div><script type="module">${js}</script><script id="${SOURCE_MARKER}" type="application/json">${encodedSource}</script></body></html>`;
+    return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#050a0c}body{position:relative}#game-root{position:absolute;inset:0;width:100%;height:100%;overflow:visible;background:#050a0c;transform-origin:0 0;will-change:transform}</style></head><body><div id="game-root"></div><script type="module">${js}</script><script id="${SOURCE_MARKER}" type="application/json">${encodedSource}</script></body></html>`;
   } finally {
     rmSync(temp, { recursive: true, force: true });
   }

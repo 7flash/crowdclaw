@@ -5,7 +5,7 @@ import { lamportsPerCredit } from "../src/server/config";
 const noop = () => {};
 
 export default function Page() {
-  const projects = projectsRepository.list();
+  const projects = projectsRepository.listHome();
   return (
     <div
       id="crowdclaw-home"

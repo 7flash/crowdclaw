@@ -11,6 +11,7 @@ export type ProjectActions = {
   devFund: () => void;
   share: () => void;
   startBuild: () => void;
+  retryBuild: () => void;
   voteMilestone: (milestoneKey: string) => void;
   setProposalTitle: (value: string) => void;
   setProposalGoal: (value: string) => void;
@@ -62,6 +63,7 @@ export function ProjectApp(props: {
         onDevFund={props.actions.devFund}
         onShare={props.actions.share}
         onStartBuild={props.actions.startBuild}
+        onRetryBuild={props.actions.retryBuild}
         onVoteMilestone={props.actions.voteMilestone}
         proposalTitle={props.proposalTitle ?? ""}
         proposalGoal={props.proposalGoal ?? ""}

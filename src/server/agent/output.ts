@@ -44,8 +44,8 @@ export function validateArtifactHtml(html: string): string[] {
   const issues: string[] = [];
   if (html.length < 300)
     issues.push("artifact is too small to be a playable game");
-  if (html.length > 250_000)
-    issues.push("artifact exceeds the 250 KB safety limit");
+  if (html.length > 2_000_000)
+    issues.push("artifact exceeds the 2 MB safety limit");
   if (!/<!doctype\s+html/i.test(html))
     issues.push("artifact is missing <!DOCTYPE html>");
   if (!/<html[\s>]/i.test(html) || !/<\/html>/i.test(html))
