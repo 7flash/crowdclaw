@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { db } from "./database";
 import {
   contextWindow,
@@ -50,6 +51,85 @@ function canQueueMilestone(
   );
 }
 
+function normalizeMilestones(projectId: string, values: unknown): Milestone[] {
+  if (!Array.isArray(values)) return [];
+  let migrationSeen = false;
+  return values.map((value: any, index) => {
+    const title = typeof value?.title === "string" ? value.title : "";
+    const goal = typeof value?.goal === "string" ? value.goal : "";
+    const explicit = value?.rendering;
+    let rendering: Milestone["rendering"];
+    if (
+      explicit === "canvas" ||
+      explicit === "three_migration" ||
+      explicit === "three"
+    ) {
+      rendering = explicit;
+    } else if (
+      !migrationSeen &&
+      /three(?:\.js)?|webgl|3d migration/i.test(`${title} ${goal}`)
+    ) {
+      rendering = "three_migration";
+    } else {
+      rendering = migrationSeen ? "three" : "canvas";
+    }
+    if (rendering === "three_migration" || rendering === "three")
+      migrationSeen = true;
+    return {
+      ...value,
+      key:
+        typeof value?.key === "string" && value.key
+          ? value.key
+          : `m_${projectId}_${Number(value?.createdAt || 0).toString(36)}_${index}`,
+      title,
+      goal,
+      votes: Math.max(0, Math.floor(Number(value?.votes || 0))),
+      rendering,
+      origin: value?.origin === "community" ? "community" : "agent",
+      ...(typeof value?.proposedBy === "string" && value.proposedBy
+        ? { proposedBy: value.proposedBy }
+        : {}),
+    } as Milestone;
+  });
+}
+
+function sortFutureByCommunity(miles: Milestone[], done: number): Milestone[] {
+  const locked = miles.slice(0, Math.min(miles.length, done + 1));
+  const future = miles.slice(Math.min(miles.length, done + 1));
+  const compare = (a: Milestone, b: Milestone) => {
+    const voteDelta = Number(b.votes || 0) - Number(a.votes || 0);
+    if (voteDelta) return voteDelta;
+    return a.createdAt - b.createdAt;
+  };
+  const migrationAlreadyShipped = locked.some(
+    (item) =>
+      item.rendering === "three_migration" || item.rendering === "three",
+  );
+  if (migrationAlreadyShipped) return [...locked, ...future.sort(compare)];
+
+  // Three-only work can never jump ahead of the rendering migration. Canvas
+  // work and the migration itself may compete by vote, so the community can
+  // choose to move 3D earlier without creating an impossible dependency order.
+  const flexible = future
+    .filter((item) => item.rendering !== "three")
+    .sort(compare);
+  const threeOnly = future
+    .filter((item) => item.rendering === "three")
+    .sort(compare);
+  return [...locked, ...flexible, ...threeOnly];
+}
+
+function normalizedMilestoneTitle(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function voterFingerprint(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 24);
+}
+
 function projectFromRow(row: any): Project {
   const creditedLamports = Math.max(
     Number(row.creditedLamports || 0),
@@ -67,7 +147,7 @@ function projectFromRow(row: any): Project {
     status: row.status,
     agentId: row.agentId,
     walletAddress: row.walletAddress,
-    milestones: (row.milestones || []) as Milestone[],
+    milestones: normalizeMilestones(row.projectId, row.milestones),
     done: Number(row.done || 0),
     spentCredits,
     reservedCredits,
@@ -79,6 +159,8 @@ function projectFromRow(row: any): Project {
     currentRunId: row.currentRunId || null,
     agentNote: row.agentNote || "",
     streamPreview: row.streamPreview || "",
+    streamUpdatedAt: Number(row.streamUpdatedAt || 0),
+    streamEventCount: Number(row.streamEventCount || 0),
     lastFundingSyncAt: Number(row.lastFundingSyncAt || 0),
     fundingError: row.fundingError || "",
     failureCount: Number(row.failureCount || 0),
@@ -122,6 +204,8 @@ function runFromRow(row: any): AgentRun {
     remainingContextTokens: Math.max(0, window - lastContextTokens),
     usageEstimated: Boolean(row.usageEstimated),
     streamChars: Number(row.streamChars || 0),
+    streamUpdatedAt: Number(row.streamUpdatedAt || 0),
+    streamEventCount: Number(row.streamEventCount || 0),
     preview: row.preview || "",
     note: row.note || "",
     error: row.error || "",
@@ -471,6 +555,144 @@ export const projectsRepository = {
     return result;
   },
 
+  voteMilestone(
+    projectId: string,
+    milestoneKey: string,
+    voterKey: string,
+  ): { project: Project; accepted: boolean } | null {
+    let result: { project: Project; accepted: boolean } | null = null;
+    db.transaction(() => {
+      const row = rowByProjectId(projectId);
+      if (!row) return;
+      const project = projectFromRow(row);
+      const miles = [...project.milestones];
+      const index = miles.findIndex((item) => item.key === milestoneKey);
+      // The milestone currently being built is locked. Votes rank only future work.
+      if (
+        index <= project.done ||
+        !miles[index] ||
+        miles[index].state !== "queued"
+      ) {
+        result = { project, accepted: false };
+        return;
+      }
+
+      const previous = db.milestoneVotes
+        .select()
+        .where({ projectId, milestoneKey, voterKey })
+        .first() as any | null;
+      if (previous) {
+        result = { project, accepted: false };
+        return;
+      }
+
+      db.milestoneVotes.insert({
+        voteId: uid("mv"),
+        projectId,
+        milestoneKey,
+        voterKey,
+        createdAt: now(),
+      });
+      miles[index] = {
+        ...miles[index],
+        votes: Math.max(0, Number(miles[index].votes || 0)) + 1,
+      };
+
+      row.milestones = sortFutureByCommunity(miles, project.done);
+      row.updatedAt = now();
+      result = { project: projectFromRow(row), accepted: true };
+    });
+    return result;
+  },
+
+  proposeMilestone(
+    projectId: string,
+    input: { title: string; goal: string; voterKey: string },
+  ): {
+    project: Project;
+    accepted: boolean;
+    milestoneKey?: string;
+    reason?: string;
+  } | null {
+    let result: {
+      project: Project;
+      accepted: boolean;
+      milestoneKey?: string;
+      reason?: string;
+    } | null = null;
+    db.transaction(() => {
+      const row = rowByProjectId(projectId);
+      if (!row) return;
+      const project = projectFromRow(row);
+      if (project.milestones.length >= 40) {
+        result = { project, accepted: false, reason: "roadmap_full" };
+        return;
+      }
+      const title = input.title.replace(/\s+/g, " ").trim().slice(0, 90);
+      const goal = input.goal.replace(/\s+/g, " ").trim().slice(0, 360);
+      if (title.length < 3 || goal.length < 8) {
+        result = { project, accepted: false, reason: "invalid" };
+        return;
+      }
+      const normalized = normalizedMilestoneTitle(title);
+      if (
+        project.milestones.some(
+          (item) => normalizedMilestoneTitle(item.title) === normalized,
+        )
+      ) {
+        result = { project, accepted: false, reason: "duplicate" };
+        return;
+      }
+      const proposer = voterFingerprint(input.voterKey);
+      const proposedCount = project.milestones.filter(
+        (item) => item.origin === "community" && item.proposedBy === proposer,
+      ).length;
+      if (proposedCount >= 3) {
+        result = { project, accepted: false, reason: "proposal_limit" };
+        return;
+      }
+
+      const migrationAlreadyReached = project.milestones
+        .slice(0, project.done + 1)
+        .some(
+          (item) =>
+            item.rendering === "three_migration" || item.rendering === "three",
+        );
+      const asksForThree = /three(?:\.js)?|webgl|\b3d\b/i.test(
+        `${title} ${goal}`,
+      );
+      const createdAt = now();
+      const milestone: Milestone = {
+        key: `m_${createdAt.toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+        title,
+        goal,
+        costCredits: 2,
+        votes: 1,
+        rendering: migrationAlreadyReached || asksForThree ? "three" : "canvas",
+        origin: "community",
+        proposedBy: proposer,
+        state: "queued",
+        createdAt,
+      };
+      const miles = [...project.milestones, milestone];
+      db.milestoneVotes.insert({
+        voteId: uid("mv"),
+        projectId,
+        milestoneKey: milestone.key,
+        voterKey: input.voterKey,
+        createdAt,
+      });
+      row.milestones = sortFutureByCommunity(miles, project.done);
+      row.updatedAt = createdAt;
+      result = {
+        project: projectFromRow(row),
+        accepted: true,
+        milestoneKey: milestone.key,
+      };
+    });
+    return result;
+  },
+
   setPlanningResult(
     projectId: string,
     runId: string,
@@ -498,10 +720,12 @@ export const projectsRepository = {
       row.error = "";
       row.failureCount = 0;
       row.retryAt = 0;
-      const project = projectFromRow(row);
-      const next = project.milestones[0];
-      row.status = canQueueMilestone(project, next) ? "queued" : "seeding";
-      row.agentNote = row.status === "queued" ? "READY" : "FUNDING";
+      // Planning is intentionally a separate phase. Publishing the roadmap does
+      // not start milestone work; the creator explicitly confirms the build from
+      // the home screen first. This gives the creator a chance to review the
+      // roadmap before any build credits or model time are spent.
+      row.status = "awaiting_start";
+      row.agentNote = "READY";
       row.updatedAt = now();
       run.status = "complete";
       run.finishedAt = now();
@@ -511,12 +735,43 @@ export const projectsRepository = {
     return result;
   },
 
+  startBuild(projectId: string): Project | null {
+    let result: Project | null = null;
+    db.transaction(() => {
+      const row = rowByProjectId(projectId);
+      if (!row) return;
+      const project = projectFromRow(row);
+      if (project.status !== "awaiting_start") {
+        result = project;
+        return;
+      }
+      const next = project.milestones[project.done];
+      if (!next) {
+        row.status = "completed";
+        row.agentNote = "";
+      } else if (canQueueMilestone(project, next)) {
+        row.status = "queued";
+        row.agentNote = "READY";
+      } else {
+        row.status = "waiting_funds";
+        row.agentNote = "WAITING";
+      }
+      row.error = "";
+      row.retryAt = 0;
+      row.updatedAt = now();
+      result = projectFromRow(row);
+    });
+    return result;
+  },
+
   setStatus(
     projectId: string,
     status: ProjectStatus,
     patch: Partial<{
       agentNote: string;
       streamPreview: string;
+      streamUpdatedAt: number;
+      streamEventCount: number;
       error: string;
       currentRunId: string | null;
       reservedCredits: number;
@@ -532,6 +787,10 @@ export const projectsRepository = {
       if (patch.agentNote !== undefined) row.agentNote = patch.agentNote;
       if (patch.streamPreview !== undefined)
         row.streamPreview = patch.streamPreview;
+      if (patch.streamUpdatedAt !== undefined)
+        row.streamUpdatedAt = Math.max(0, Math.floor(patch.streamUpdatedAt));
+      if (patch.streamEventCount !== undefined)
+        row.streamEventCount = Math.max(0, Math.floor(patch.streamEventCount));
       if (patch.error !== undefined) row.error = patch.error;
       if (patch.currentRunId !== undefined)
         row.currentRunId = patch.currentRunId;
@@ -660,6 +919,8 @@ export const projectsRepository = {
       row.status = "working";
       row.agentNote = "BUILDING";
       row.streamPreview = "";
+      row.streamUpdatedAt = now();
+      row.streamEventCount = 0;
       row.error = "";
       row.updatedAt = now();
       result = projectFromRow(row);
@@ -673,6 +934,7 @@ export const projectsRepository = {
     runId: string,
     preview: string,
     note = "",
+    streamEventCount?: number,
   ): void {
     db.transaction(() => {
       const project = rowByProjectId(projectId);
@@ -685,10 +947,16 @@ export const projectsRepository = {
       )
         return;
       const clipped = preview.slice(-1800);
+      const streamedAt = now();
       project.streamPreview = clipped;
+      project.streamUpdatedAt = streamedAt;
+      if (streamEventCount !== undefined)
+        project.streamEventCount = Math.max(0, Math.floor(streamEventCount));
       if (note) project.agentNote = note.slice(0, 220);
-      project.updatedAt = now();
-      run.streamChars = preview.length;
+      project.updatedAt = streamedAt;
+      run.streamUpdatedAt = streamedAt;
+      if (streamEventCount !== undefined)
+        run.streamEventCount = Math.max(0, Math.floor(streamEventCount));
       run.preview = clipped;
       if (note) run.note = note.slice(0, 220);
     });
@@ -835,6 +1103,8 @@ export const projectsRepository = {
       contextWindow: contextWindow(),
       usageEstimated: false,
       streamChars: 0,
+      streamUpdatedAt: startedAt,
+      streamEventCount: 0,
       preview: "",
       note: "",
       error: "",
@@ -856,6 +1126,8 @@ export const projectsRepository = {
       lastContextTokens: number;
       usageEstimated: boolean;
       streamChars: number;
+      streamUpdatedAt: number;
+      streamEventCount: number;
       preview: string;
       note: string;
     }>,
@@ -889,6 +1161,10 @@ export const projectsRepository = {
         row.usageEstimated = Boolean(usage.usageEstimated);
       if (usage.streamChars !== undefined)
         row.streamChars = Math.max(0, Math.floor(usage.streamChars));
+      if (usage.streamUpdatedAt !== undefined)
+        row.streamUpdatedAt = Math.max(0, Math.floor(usage.streamUpdatedAt));
+      if (usage.streamEventCount !== undefined)
+        row.streamEventCount = Math.max(0, Math.floor(usage.streamEventCount));
       if (usage.preview !== undefined) row.preview = usage.preview.slice(-1800);
       if (usage.note !== undefined) row.note = usage.note.slice(0, 220);
       result = runFromRow(row);
@@ -1402,7 +1678,7 @@ export const projectsRepository = {
     return expired;
   },
 
-  recoverProjectWork(projectId: string): number {
+  recoverProjectWork(projectId: string, force = false): number {
     let recovered = 0;
     const t = now();
     db.transaction(() => {
@@ -1428,7 +1704,7 @@ export const projectsRepository = {
         recovered += 1;
         return;
       }
-      if (Number(row.leaseUntil || 0) > t) return;
+      if (!force && Number(row.leaseUntil || 0) > t) return;
       if (row.status === "planning" && row.currentRunId) {
         const run = rowByRunId(row.currentRunId);
         if (run && run.status === "running") {

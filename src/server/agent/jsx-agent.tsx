@@ -1,8 +1,7 @@
 /** @jsxImportSource jsx-ai */
-import { md, runAgent } from "jsx-ai";
+import { callLLM, md, runAgent } from "jsx-ai";
 import type {
   AgentContext,
-  AgentEvent,
   AgentRunResult,
   AgentUsage as JsxAgentUsage,
   CanonicalToolCall,
@@ -21,7 +20,13 @@ import {
   jsxAiRuntime,
   modelName,
 } from "../config";
-import type { Milestone, Project, Steering } from "../../shared/types";
+import type {
+  Milestone,
+  MilestoneRendering,
+  Project,
+  Steering,
+} from "../../shared/types";
+import { log } from "../log";
 import { validateArtifactHtml } from "./output";
 import {
   ensureWorkspaceGameSource,
@@ -31,47 +36,54 @@ import {
 import {
   compileGameHtml,
   extractGameSource,
+  normalizeGameSource,
   validateGameSource,
 } from "./game-artifact";
 
 const STRATEGY = "hybrid" as const;
 const MODEL = () => modelName();
 const TEMPERATURE = () => (/^gemini-3(?:\.|-|$)/i.test(MODEL()) ? 1.0 : 0.2);
+const CODEX = () => jsxAiRuntime() === "codex";
 const PLAN_MAX_STEPS = 1;
 const PLAN_MAX_TOOL_CALLS = 1;
 
 export const PLAN_SYS_SOURCE = `You are a game designer planning a tiny browser game that will be implemented by an autonomous coding agent.
 
-Produce exactly three milestones:
-- Milestone 1 must create an immediately playable self-contained game, not a scaffold.
-- Milestone 2 must materially improve gameplay, progression, feedback, or game feel.
-- Milestone 3 must deepen the game rather than merely restyle it.
+Start with one short public sentence (maximum 12 words), then immediately call submit_game_plan. The sentence is streamed live and must describe only the chosen direction, not reasoning.
+
+Produce exactly six concrete milestones with a short title and a useful player-facing description for each:
+- Milestone 1 must create an immediately playable self-contained Canvas 2D game, not a scaffold. It must include controls, scoring or an objective, failure/win state, and a reliable restart.
+- Milestones 2-3 should deepen the Canvas version with game feel, progression, content, or challenge.
+- One milestone from 4-5 must explicitly migrate the established game from Canvas 2D to Three.js/WebGL while preserving the working game loop and controls.
+- The remaining milestones should exploit the stronger foundation with meaningful mechanics, variety, progression, bosses, levels, or polish rather than cosmetic restyling.
+- Keep milestones independently valuable so community votes can reorder future work.
 - Costs are whole numbers from 1 to 4.
 
 Submit the complete plan through submit_game_plan. Do not answer in a custom text format.`;
 
-export const BUILD_SYS_SOURCE = `You are an autonomous browser-game engineer producing one complete browser-game revision.
+export const BUILD_SYS_SOURCE = `You generate exactly one complete browser-game source file.
 
-The user message contains the complete current game implementation, so do not spend a model turn inspecting files.
-In this single model turn, call tools in this order:
-1. public_status with a concrete 2-8 word public update.
-2. write_file for game.tsx with the complete revised source.
-3. complete_milestone.
+Write the source as normal assistant text so jsx-ai can stream it through text_delta. Do NOT place source code inside tool arguments.
 
-Source contract:
-- game.tsx must import render from "tradjs/client".
-- Default-export function mount(). It renders the complete game into #game-root and returns a cleanup function that renders null.
-- Keep the game self-contained in this one TSX source file; CrowdClaw bundles tradjs/client into the published standalone HTML.
-- No external scripts, fonts, images, imports other than tradjs/client, CDNs, fetches, websockets, or network requests.
-- No localStorage, sessionStorage, or IndexedDB.
-- Fill the frame and keep the game responsive.
-- Support keyboard and pointer input and show controls on screen.
-- Include a real game loop, score or win/lose state, and restart without a reload.
-- Preserve strong existing gameplay and materially implement the requested milestone.
-- Keep game.tsx compact. Prefer simple mechanics and concise implementation over large abstractions; aim to stay under roughly 450 lines.
+Your response format is strict:
+1. Start immediately with the exact line <<<CROWDCLAW_GAME_TSX>>>
+2. Emit the complete game.tsx source. No Markdown fences and no prose.
+3. End the source with the exact line <<<CROWDCLAW_END_GAME_TSX>>>
+4. Then call commit_game exactly once. commit_game has no source-code arguments; it only tells the host the streamed file is complete and ready to validate.
 
-Tool calls are executed in order. complete_milestone compiles and validates game.tsx written earlier in the same response.
-The public_status is intentionally public; it is not private chain-of-thought.`;
+Hard contract:
+- Import { render } from "tradjs/client". Import "three" only when the rendering contract requires Three.js.
+- Default-export function mount(); mount once into #game-root and return cleanup.
+- No network requests, external assets, browser storage, or other imports.
+- Keyboard + pointer controls, visible controls, real game loop, objective/score, failure or win state, and restart.
+- Include a visible Restart/Retry control. A normal local reset handler is fine; CrowdClaw also injects a host-level restart fallback.
+- Canvas milestones use one mounted canvas and CanvasRenderingContext2D; never rerender the UI every frame.
+- Three.js milestones use THREE.WebGLRenderer and clean up renderer/resources/listeners.
+- Preserve working gameplay while implementing the requested milestone.
+
+For the first Canvas version, favor a compact complete game: roughly 120-240 lines and 5,000-10,000 source characters. Avoid abstractions that do not improve play.
+
+Do not spend a long turn planning before emitting the begin marker. Start writing the file immediately.`;
 
 export const BUILD_BRIEF_SYS_SOURCE = `You are preparing a tiny public progress log for a browser-game build.
 
@@ -94,12 +106,21 @@ export type AgentActivity = {
   text: string;
   note: string;
   usage: AgentUsage;
+  event?: boolean;
+  sequence?: number;
+};
+
+export type AgentStreamUpdate = {
+  kind: "status" | "text";
+  text: string;
+  sequence?: number;
 };
 
 export type PlannedMilestone = {
   title: string;
   goal: string;
   costCredits: number;
+  rendering: MilestoneRendering;
 };
 
 export type GamePlan = {
@@ -119,7 +140,6 @@ export type BuildPhaseResult = {
   html: string;
   source: string;
   summary: string;
-  nextMilestone: { title: string; goal: string; costCredits: number };
   usage: AgentUsage;
   activityText: string;
   result: AgentRunResult<CompletionState>;
@@ -129,12 +149,7 @@ type PlanningState = { plan?: GamePlan; validationError?: string };
 type CompletionState = {
   validationError?: string;
   compiledHtml?: string;
-  completion?: {
-    summary: string;
-    nextMilestone: string;
-    nextGoal: string;
-    nextCost: number;
-  };
+  completion?: { summary: string };
 };
 
 const PLAN_SCHEMA: ToolParametersSchema = {
@@ -155,7 +170,7 @@ const PLAN_SCHEMA: ToolParametersSchema = {
     },
     milestones: {
       type: "array",
-      description: "Exactly three concrete implementation milestones",
+      description: "Exactly six concrete implementation milestones",
       items: {
         type: "object",
         properties: {
@@ -202,65 +217,19 @@ const BuildBriefTool = () => (
   />
 );
 
-const COMPLETE_SCHEMA: ToolParametersSchema = {
-  type: "object",
-  properties: {
-    summary: {
-      type: "string",
-      description: "Concise description of completed gameplay work",
-    },
-    next_milestone: {
-      type: "string",
-      description:
-        "One concrete 3-7 word gameplay milestone that should come next",
-    },
-    next_goal: {
-      type: "string",
-      description:
-        "What the player should experience after that next milestone",
-    },
-    next_cost: {
-      type: "integer",
-    },
-  },
-  required: ["summary", "next_milestone", "next_goal", "next_cost"],
-};
-
 const PlanningTools = () => (
   <tool
     name="submit_game_plan"
-    description="Submit the complete three-milestone game plan"
+    description="Submit the complete six-milestone game plan"
     schema={PLAN_SCHEMA}
   />
 );
 
 const WorkspaceTools = () => (
-  <>
-    <tool
-      name="public_status"
-      description="Publish one short public activity update for someone watching the agent"
-    >
-      <param name="text" type="string" required>
-        Concrete action, 2-8 words
-      </param>
-    </tool>
-    <tool
-      name="write_file"
-      description="Replace the complete game.tsx TradJS browser game"
-    >
-      <param name="path" type="string" required>
-        Must be game.tsx
-      </param>
-      <param name="content" type="string" required>
-        Complete file contents
-      </param>
-    </tool>
-    <tool
-      name="complete_milestone"
-      description="Accept the milestone after game.tsx compiles into a standalone HTML artifact and passes host validation"
-      schema={COMPLETE_SCHEMA}
-    />
-  </>
+  <tool
+    name="commit_game"
+    description="Commit the complete game.tsx source already emitted in assistant text"
+  />
 );
 
 function Conversation({ history }: { history: readonly ExtractedMessage[] }) {
@@ -282,12 +251,23 @@ function Conversation({ history }: { history: readonly ExtractedMessage[] }) {
 }
 
 function PlanningPrompt({ history }: { history: readonly ExtractedMessage[] }) {
+  if (CODEX()) {
+    // Match jsx-ai's known-good Codex streaming shape: let Codex use its own
+    // configured model instead of forcing GAME_MODEL through the prompt.
+    return (
+      <prompt strategy={STRATEGY}>
+        <system>{md`${PLAN_SYS_SOURCE}`}</system>
+        <PlanningTools />
+        <Conversation history={history} />
+      </prompt>
+    );
+  }
   return (
     <prompt
       model={MODEL()}
       strategy={STRATEGY}
       temperature={TEMPERATURE()}
-      maxTokens={1800}
+      maxTokens={2600}
     >
       <system>{md`${PLAN_SYS_SOURCE}`}</system>
       <PlanningTools />
@@ -301,6 +281,15 @@ function BuildBriefPrompt({
 }: {
   history: readonly ExtractedMessage[];
 }) {
+  if (CODEX()) {
+    return (
+      <prompt strategy={STRATEGY}>
+        <system>{md`${BUILD_BRIEF_SYS_SOURCE}`}</system>
+        <BuildBriefTool />
+        <Conversation history={history} />
+      </prompt>
+    );
+  }
   return (
     <prompt
       model={MODEL()}
@@ -320,12 +309,21 @@ function MilestonePrompt({
 }: {
   history: readonly ExtractedMessage[];
 }) {
+  if (CODEX()) {
+    return (
+      <prompt strategy={STRATEGY}>
+        <system>{md`${BUILD_SYS_SOURCE}`}</system>
+        <WorkspaceTools />
+        <Conversation history={history} />
+      </prompt>
+    );
+  }
   return (
     <prompt
       model={MODEL()}
       strategy={STRATEGY}
       temperature={TEMPERATURE()}
-      maxTokens={Math.min(agentMaxTokens(), 8_000)}
+      maxTokens={Math.min(agentMaxTokens(), 5_000)}
     >
       <system>{md`${BUILD_SYS_SOURCE}`}</system>
       <WorkspaceTools />
@@ -401,19 +399,40 @@ function normalizedCost(
 
 const PLAN_FALLBACKS = [
   {
-    title: "Playable Core Loop",
-    goal: "Ship an immediately playable loop with controls, scoring, failure, and restart.",
+    title: "Canvas Playable Core",
+    goal: "Ship a responsive Canvas 2D game with direct drawing, keyboard and pointer controls, scoring or objectives, failure, and a reliable restart.",
     costCredits: 2,
+    rendering: "canvas",
   },
   {
-    title: "Feedback And Progression",
-    goal: "Improve game feel, feedback, challenge progression, and moment-to-moment rewards.",
+    title: "Game Feel And Feedback",
+    goal: "Improve the Canvas version with clearer feedback, pacing, juice, and readable moment-to-moment decisions.",
     costCredits: 2,
+    rendering: "canvas",
   },
   {
-    title: "Variety And Depth",
-    goal: "Add meaningful gameplay variety and decisions that deepen repeat runs.",
+    title: "Progression And Variety",
+    goal: "Add meaningful progression, hazards, rewards, or run variety while keeping the Canvas game fast and coherent.",
+    costCredits: 2,
+    rendering: "canvas",
+  },
+  {
+    title: "Three.js 3D Migration",
+    goal: "Migrate the proven Canvas game loop to Three.js/WebGL, preserving controls, restart, scoring, and gameplay while introducing a clear 3D presentation.",
     costCredits: 3,
+    rendering: "three_migration",
+  },
+  {
+    title: "3D Mechanics And Depth",
+    goal: "Use the Three.js foundation for mechanics or spatial decisions that were not possible or readable in the 2D version.",
+    costCredits: 3,
+    rendering: "three",
+  },
+  {
+    title: "Challenge And Replayability",
+    goal: "Add a strong late-game challenge, boss, level structure, modifiers, or replayable goals with polished feedback.",
+    costCredits: 3,
+    rendering: "three",
   },
 ] satisfies PlannedMilestone[];
 
@@ -428,7 +447,7 @@ export function normalizePlan(args: JsonObject, idea: string): GamePlan {
 
   for (
     let index = 0;
-    index < rawMilestones.length && milestones.length < 3;
+    index < rawMilestones.length && milestones.length < 6;
     index += 1
   ) {
     const value = rawMilestones[index];
@@ -453,13 +472,54 @@ export function normalizePlan(args: JsonObject, idea: string): GamePlan {
         item.cost ?? item.costCredits,
         fallback.costCredits,
       ),
+      rendering: fallback.rendering,
     });
   }
 
   if (!milestones.length)
     throw new Error("submit_game_plan returned no usable milestones");
-  while (milestones.length < 3)
+  while (milestones.length < 6)
     milestones.push({ ...PLAN_FALLBACKS[milestones.length] });
+
+  // The rendering arc is product policy, not optional model taste: v1 proves the
+  // game in Canvas 2D, then one explicit migration milestone establishes Three.js.
+  milestones[0] = {
+    ...milestones[0],
+    goal: compactWords(
+      `Build the first playable version with Canvas 2D and a reliable host-backed restart. ${milestones[0].goal}`,
+      60,
+      360,
+    ),
+    rendering: "canvas",
+  };
+  for (let index = 0; index < 3; index += 1) {
+    if (
+      /three(?:\.js)?|webgl/i.test(
+        `${milestones[index].title} ${milestones[index].goal}`,
+      )
+    )
+      milestones[index] = { ...PLAN_FALLBACKS[index] };
+  }
+  let migrationIndex = milestones
+    .slice(3, 5)
+    .findIndex((item) =>
+      /three(?:\.js)?|webgl/i.test(`${item.title} ${item.goal}`),
+    );
+  migrationIndex = migrationIndex < 0 ? 3 : migrationIndex + 3;
+  if (
+    !/three(?:\.js)?|webgl/i.test(
+      `${milestones[migrationIndex].title} ${milestones[migrationIndex].goal}`,
+    )
+  )
+    milestones[migrationIndex] = { ...PLAN_FALLBACKS[3] };
+  milestones.forEach((item, index) => {
+    item.rendering =
+      index < migrationIndex
+        ? "canvas"
+        : index === migrationIndex
+          ? "three_migration"
+          : "three";
+  });
 
   const summarySource =
     optionalString(args.summary) || optionalString(args.description) || idea;
@@ -477,7 +537,7 @@ export function normalizePlan(args: JsonObject, idea: string): GamePlan {
     slug: slugify(slugSource),
     summary,
     note,
-    milestones: milestones.slice(0, 3),
+    milestones: milestones.slice(0, 6),
   };
 }
 
@@ -602,10 +662,8 @@ async function buildPublicBrief(
             context.state.notes = notes;
             return toolResult(call, `Published ${notes.length} public notes.`);
           },
+          call: callLLM,
           callOptions: {
-            model: MODEL(),
-            strategy: STRATEGY,
-            ...(jsxAiRuntime() ? { runtime: jsxAiRuntime() } : {}),
             retries: 0,
             timeoutMs: Math.min(buildRequestTimeoutMs(), 35_000),
           },
@@ -626,102 +684,43 @@ async function buildPublicBrief(
   }
 }
 
-function publicStatus(raw: JsonValue | undefined): string {
-  const words = asString(raw, "text")
-    .replace(/\s+/g, " ")
-    .split(" ")
-    .filter(Boolean)
-    .slice(0, 8);
-  if (words.length < 2) throw new Error("public_status requires 2-8 words");
-  return words.join(" ").slice(0, 100);
-}
-
 async function executeWorkspaceTool(
   projectId: string,
   call: CanonicalToolCall,
   context: AgentContext<CompletionState>,
+  source: string,
+  summary: string,
 ): Promise<{ message: ExtractedMessage; note: string }> {
+  if (call.name !== "commit_game") {
+    return {
+      message: toolResult(call, `Unknown workspace tool: ${call.name}`, true),
+      note: "",
+    };
+  }
   try {
-    switch (call.name) {
-      case "public_status": {
-        const text = publicStatus(call.args.text);
-        return { message: toolResult(call, "Published."), note: text };
-      }
-      case "write_file": {
-        const path = asString(call.args.path, "path");
-        if (path.replaceAll("\\", "/") !== "game.tsx")
-          throw new Error("write_file only accepts game.tsx");
-        const content = asString(call.args.content, "content");
-        const issues = validateGameSource(content);
-        if (issues.length) throw new Error(issues.join("; "));
-        writeWorkspaceFile(projectId, "game.tsx", content);
-        return {
-          message: toolResult(
-            call,
-            `Wrote game.tsx (${content.length} chars).`,
-          ),
-          note: "WRITE game.tsx",
-        };
-      }
-      case "complete_milestone": {
-        const summary = asString(call.args.summary, "summary");
-        const nextMilestone = asString(
-          call.args.next_milestone,
-          "next_milestone",
-        );
-        const words = nextMilestone.split(/\s+/).filter(Boolean).length;
-        if (words < 3 || words > 7)
-          throw new Error("next_milestone must contain 3-7 words");
-        const nextCost = asInteger(call.args.next_cost, "next_cost");
-        if (nextCost < 1 || nextCost > 4)
-          throw new Error("next_cost must be between 1 and 4");
-        const nextGoal = asString(call.args.next_goal, "next_goal");
-        const source = readWorkspaceGameSource(projectId);
-        const html = await compileGameHtml(source);
-        const issues = validateArtifactHtml(html);
-        if (issues.length) {
-          context.state.validationError = issues.join("; ");
-          return {
-            message: toolResult(
-              call,
-              `Completion rejected: ${issues.join("; ")}`,
-              true,
-            ),
-            note: "FIX game.tsx",
-          };
-        }
-        context.state.validationError = undefined;
-        context.state.compiledHtml = html;
-        context.state.completion = {
-          summary,
-          nextMilestone,
-          nextGoal,
-          nextCost,
-        };
-        return {
-          message: toolResult(call, `Milestone accepted: ${summary}`),
-          note: "DONE",
-        };
-      }
-      default:
-        return {
-          message: toolResult(
-            call,
-            `Unknown workspace tool: ${call.name}`,
-            true,
-          ),
-          note: `TOOL ${call.name}`,
-        };
-    }
-  } catch (error) {
+    if (!source.trim())
+      throw new Error("No complete streamed game.tsx source was received");
+    const normalizedSource = normalizeGameSource(source);
+    const sourceIssues = validateGameSource(normalizedSource);
+    if (sourceIssues.length) throw new Error(sourceIssues.join("; "));
+    const html = await compileGameHtml(normalizedSource);
+    const artifactIssues = validateArtifactHtml(html);
+    if (artifactIssues.length) throw new Error(artifactIssues.join("; "));
+    writeWorkspaceFile(projectId, "game.tsx", normalizedSource);
+    context.state.validationError = undefined;
+    context.state.compiledHtml = html;
+    context.state.completion = { summary };
     return {
       message: toolResult(
         call,
-        error instanceof Error ? error.message : String(error),
-        true,
+        `Published game.tsx (${normalizedSource.length} chars).`,
       ),
-      note: `ERROR ${call.name}`,
+      note: "",
     };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    context.state.validationError = message;
+    return { message: toolResult(call, message, true), note: "" };
   }
 }
 
@@ -749,31 +748,57 @@ function summarizeToolMessage(message: ExtractedMessage) {
 function publicRuntimeProgress(value: unknown): string {
   if (typeof value !== "string") return "";
   const message = value.replace(/\s+/g, " ").trim();
-  if (!message || /^(?:thinking|codex turn started)$/i.test(message)) return "";
+  if (
+    !message ||
+    /^(?:thinking|codex (?:turn|command) started|model step started|model response received)$/i.test(
+      message,
+    )
+  )
+    return "";
+  if (
+    /configured service tier .*not advertised as supported|service tier .*will be omitted/i.test(
+      message,
+    )
+  )
+    return "";
   return message.slice(0, 160);
 }
 
 function effectiveBuildTimeoutMs(project: Project): number {
-  // A full game.tsx arrives as one buffered Codex tool-call payload. 150s was
-  // repeatedly expiring just before useful model_end output arrived. Give the
-  // first attempt a little more room, then grow the window on actual retries
-  // instead of retrying forever with the exact same doomed timeout.
-  const base = Math.max(180_000, buildRequestTimeoutMs());
-  const retryBoost = Math.min(
-    180_000,
-    Math.max(0, project.failureCount) * 60_000,
-  );
-  return Math.min(
-    base + retryBoost,
-    Math.max(180_000, agentMaxDurationMs() - 15_000),
+  // A tiny game should begin its actual response quickly. Do not mask a broken
+  // Codex turn behind the old 12-minute ceiling. Honor smaller local settings,
+  // cap the first attempt at 3 minutes, and give only one extra minute on retries.
+  const configured = Math.max(60_000, buildRequestTimeoutMs());
+  const firstAttempt = Math.min(3 * 60_000, configured);
+  const retryBoost = project.failureCount > 0 ? 60_000 : 0;
+  return Math.min(4 * 60_000, firstAttempt + retryBoost);
+}
+
+function effectiveBuildMaxDurationMs(project: Project): number {
+  return Math.max(
+    agentMaxDurationMs(),
+    effectiveBuildTimeoutMs(project) + 30_000,
   );
 }
 
 export async function planGame(
   idea: string,
-  onNote?: (note: string) => void,
+  onUpdate?: (update: AgentStreamUpdate) => void,
 ): Promise<PlanResult> {
   const state: PlanningState = {};
+  let assistantText = "";
+  let lastTextEmit = 0;
+  let streamSequence = 0;
+  const emitUpdate = (update: Omit<AgentStreamUpdate, "sequence">) =>
+    onUpdate?.({ ...update, sequence: ++streamSequence });
+  const emitAssistantText = (force = false) => {
+    const clean = assistantText.replace(/\s+/g, " ").trim().slice(0, 420);
+    if (!clean) return;
+    if (!force && clean.length - lastTextEmit < 24 && !/[.!?]$/.test(clean))
+      return;
+    lastTextEmit = clean.length;
+    emitUpdate({ kind: "text", text: clean });
+  };
   const result = await measure(
     {
       start: () => "jsx-ai planning agent",
@@ -795,13 +820,11 @@ export async function planGame(
             },
             () => executePlanningTool(idea, call, context),
           ),
-        // Keep runAgent's default runtime-aware model call so JSX_AI_RUNTIME can select Codex.
+        // Use the same callLLM path as jsx-ai's standalone streaming example.
+        call: callLLM,
         callOptions: {
-          model: MODEL(),
-          strategy: STRATEGY,
-          ...(jsxAiRuntime() ? { runtime: jsxAiRuntime() } : {}),
-          // Initial planning is deliberately one provider request. A 429 or other
-          // provider failure is surfaced to the project instead of retried silently.
+          // JSX_AI_RUNTIME selects Codex. When Codex is active the prompt itself
+          // intentionally leaves model selection to the user's Codex config.
           retries: 0,
           timeoutMs: Math.min(agentRequestTimeoutMs(), 45_000),
         },
@@ -809,17 +832,23 @@ export async function planGame(
         maxToolCalls: PLAN_MAX_TOOL_CALLS,
         isComplete: (_response, _toolResults, context) =>
           Boolean(context.state.plan),
-        onEvent: (event: AgentEvent<PlanningState>) => {
-          if (event.type === "model_start") {
-            onNote?.("Model running");
+        // jsx-ai now exposes one ordered UI stream. text_delta and tool_progress
+        // arrive chronologically with lifecycle/tool execution events, so the app
+        // cannot accidentally render tool execution ahead of earlier model text.
+        onEvent: (event: any) => {
+          if (event.type === "text_delta") {
+            assistantText += String(event.delta || "");
+            emitAssistantText();
             return;
           }
+          if (event.type === "tool_progress") return;
+          if (event.type === "model_start") return;
           if (event.type === "runtime_progress") {
-            const message = publicRuntimeProgress(event.progress.message);
-            if (message) onNote?.(message);
+            const message = publicRuntimeProgress(event.progress?.message);
+            if (message) emitUpdate({ kind: "status", text: message });
             return;
           }
-          if (event.type === "model_end") onNote?.("Finalizing plan");
+          if (event.type === "model_end") emitAssistantText(true);
         },
       }),
   );
@@ -831,8 +860,50 @@ export async function planGame(
       `Planning stopped with ${result.reason} without a valid plan.`,
     );
   }
-  onNote?.(state.plan.note);
+  emitAssistantText(true);
+  emitUpdate({ kind: "status", text: state.plan.note });
   return { plan: state.plan, usage: usageFromAgent(result.usage), result };
+}
+
+function validateMilestoneRendering(
+  source: string,
+  milestoneIndex: number,
+  milestone: Milestone,
+  previousUsesThree: boolean,
+): string[] {
+  const issues: string[] = [];
+  const rendering =
+    milestone.rendering ||
+    (/three(?:\.js)?|webgl/i.test(`${milestone.title} ${milestone.goal || ""}`)
+      ? "three_migration"
+      : "canvas");
+  const usesThree = /from\s+["']three["']/.test(source);
+  const usesCanvas2d = /getContext\s*\(\s*["']2d["']/.test(source);
+  const renderCalls = (source.match(/\brender\s*\(/g) || []).length;
+
+  if (milestoneIndex === 0) {
+    if (!usesCanvas2d)
+      issues.push("v1 must draw through CanvasRenderingContext2D");
+    if (usesThree) issues.push("v1 must not import Three.js");
+    if (renderCalls > 2)
+      issues.push(
+        "v1 must mount the DOM/canvas once; do not call render() from the animation loop",
+      );
+  } else if (rendering === "three_migration" || rendering === "three") {
+    if (!usesThree) issues.push("this roadmap phase requires Three.js");
+    if (!/WebGLRenderer/.test(source))
+      issues.push("Three.js revisions must use WebGLRenderer");
+  } else if (previousUsesThree && !usesThree) {
+    issues.push(
+      "do not regress a migrated Three.js game back to DOM/Canvas rendering",
+    );
+  } else if (!previousUsesThree && !usesCanvas2d) {
+    issues.push("pre-migration revisions must keep CanvasRenderingContext2D");
+  }
+
+  if (!/requestAnimationFrame/.test(source))
+    issues.push("game must have a real animation loop");
+  return issues;
 }
 
 export async function buildMilestone(
@@ -849,6 +920,25 @@ export async function buildMilestone(
     currentSource = readWorkspaceGameSource(project.id);
   } catch {}
 
+  const previousUsesThree =
+    /from\s+["']three["']|THREE\.WebGLRenderer|new\s+WebGLRenderer/i.test(
+      currentSource,
+    );
+  const milestoneRendering =
+    milestone.rendering ||
+    (/three(?:\.js)?|webgl/i.test(`${milestone.title} ${milestone.goal || ""}`)
+      ? "three_migration"
+      : "canvas");
+  const renderingContract =
+    project.done === 0
+      ? "RENDERING CONTRACT: This is v1. Use one HTML canvas with CanvasRenderingContext2D. Render/mount the shell once, draw imperatively every animation frame, and do not import Three.js yet. Include a visible Restart/Retry control; a normal local reset handler is acceptable because CrowdClaw injects a host-level restart fallback."
+      : milestoneRendering === "three_migration" ||
+          (milestoneRendering === "three" && !previousUsesThree)
+        ? "RENDERING CONTRACT: This roadmap phase requires the deliberate Three.js migration now. Import three, use THREE.WebGLRenderer, preserve the proven controls/game loop, and keep a visible Restart/Retry control working."
+        : previousUsesThree
+          ? "RENDERING CONTRACT: The game has already migrated to Three.js. Preserve the Three.js/WebGL renderer and build on it. Keep restart working."
+          : "RENDERING CONTRACT: Keep this revision on Canvas 2D. Render the shell once and draw with CanvasRenderingContext2D; do not migrate to Three.js until the roadmap reaches the migration phase. Keep a visible Restart/Retry control working.";
+
   const previousFeedback =
     project.error && !/^(?:quota|busy)$/i.test(project.error.trim())
       ? `PREVIOUS ATTEMPT FEEDBACK: ${project.error.slice(0, 500)}`
@@ -858,41 +948,131 @@ export async function buildMilestone(
     GAME: ${project.summary || project.idea}
     MILESTONE ${project.done + 1}: ${milestone.title}
     ${milestone.goal ? `GOAL: ${milestone.goal}` : ""}
-    BUDGET SIGNAL: ${milestone.costCredits}/4
+    ${renderingContract}
     ${previousFeedback}
 
     ${
       steering.length
-        ? `SUPPORTER STEERING:\n${steering.map((item) => `- ${item.influence.toFixed(2)} influence: ${item.instruction}`).join("\n")}\nUse influence as weight. Apply compatible requests and let stronger requests shape the rolling milestone.`
+        ? `SUPPORTER STEERING:\n${steering.map((item) => `- ${item.influence.toFixed(2)} influence: ${item.instruction}`).join("\n")}`
         : ""
     }
 
     CURRENT IMPLEMENTATION:
     ${currentSource ? `\`\`\`tsx\n${currentSource}\n\`\`\`` : previousHtml ? `Legacy standalone HTML follows. Preserve its strongest gameplay while rewriting it as the required TradJS game.tsx:\n\`\`\`html\n${previousHtml.slice(0, 180000)}\n\`\`\`` : "No previous implementation; create v1 from scratch."}
 
-    Produce the complete revised game.tsx now. Use one public_status, then write_file, then complete_milestone in this same response.
+    Emit the complete game.tsx between the required markers, then call commit_game once.
   `;
 
   const state: CompletionState = {};
-  let activityText = "";
   let liveUsage = blankUsage();
-  let lastProgressNote = "";
-
-  const pushActivity = (note: string) => {
-    const clean = note.replace(/\s+/g, " ").trim().slice(0, 160);
-    if (!clean || clean === lastProgressNote) return;
-    lastProgressNote = clean;
-    activityText += `${clean}\n`;
-    onActivity({
-      text: activityText.slice(-1800),
-      note: clean,
-      usage: liveUsage,
+  let sourceProgress = "";
+  let publicText = "";
+  let streamedAssistantText = "";
+  let streamSequence = 0;
+  let nextLoggedContentChars = 2_000;
+  const buildStreamStartedAt = Date.now();
+  let firstUsefulEventLogged = false;
+  const logFirstUsefulEvent = (type: string) => {
+    if (firstUsefulEventLogged) return;
+    firstUsefulEventLogged = true;
+    log("info", "agent.stream.first_useful_event", {
+      projectId: project.id,
+      type,
+      elapsedMs: Date.now() - buildStreamStartedAt,
     });
   };
 
+  const composeActivity = () =>
+    [
+      publicText ? `A|${publicText}` : "",
+      sourceProgress ? `G|${sourceProgress}` : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+  const publishActivity = (note = "", event = false) => {
+    onActivity({
+      text: composeActivity(),
+      note,
+      usage: liveUsage,
+      event,
+      sequence: streamSequence,
+    });
+  };
+
+  const BEGIN_SOURCE = "<<<CROWDCLAW_GAME_TSX>>>";
+  const END_SOURCE = "<<<CROWDCLAW_END_GAME_TSX>>>";
+
+  const streamedSource = (requireComplete = false): string => {
+    const text = streamedAssistantText;
+
+    const begin = text.indexOf(BEGIN_SOURCE);
+    if (begin >= 0) {
+      let body = text
+        .slice(begin + BEGIN_SOURCE.length)
+        .replace(/^\s*\r?\n?/, "");
+      const end = body.indexOf(END_SOURCE);
+      if (end < 0) return requireComplete ? "" : body;
+      return body.slice(0, end).replace(/\s+$/, "");
+    }
+
+    // Be tolerant if the model uses a normal TSX fence despite the strict format.
+    const fence = text.match(/```(?:tsx|typescript|ts)\s*\r?\n?/i);
+    if (fence?.index != null) {
+      const body = text.slice(fence.index + fence[0].length);
+      const close = body.indexOf("```");
+      if (close < 0) return requireComplete ? "" : body;
+      return body.slice(0, close).replace(/\s+$/, "");
+    }
+
+    // Last-resort raw-source mode: assistant text may begin directly with game.tsx.
+    // Tool calls are out-of-band, so slicing from the first import is safe.
+    const raw = text.search(/(?:^|\n)\s*import\s+[^\n]*["']tradjs\/client["']/);
+    if (raw >= 0) {
+      const body = text.slice(raw).replace(/^\s+/, "");
+      return requireComplete ? body.replace(/\s+$/, "") : body;
+    }
+
+    return "";
+  };
+
+  const publishSourceProgress = (forceLog = false) => {
+    const source = streamedSource(false);
+    if (!source) return;
+    const chars = source.length;
+    const lines = source.split(/\r?\n/).length;
+    sourceProgress = `game.tsx · ${lines.toLocaleString("en-US")} lines · ${chars.toLocaleString("en-US")} chars`;
+    if (forceLog || chars >= nextLoggedContentChars) {
+      log("info", "agent.stream.text_source", {
+        projectId: project.id,
+        chars,
+        lines,
+        sequence: streamSequence,
+      });
+      nextLoggedContentChars = Math.floor(chars / 2_000 + 1) * 2_000;
+    }
+    publishActivity("", false);
+  };
+
+  const appendAssistantDelta = (delta: unknown) => {
+    const text = String(delta || "");
+    if (!text) return;
+    streamedAssistantText += text;
+    if (streamedSource(false)) {
+      logFirstUsefulEvent("text_delta.game_source");
+      publicText = "";
+      publishSourceProgress(false);
+      return;
+    }
+    // Keep the pre-source stage silent unless the runtime itself has a useful
+    // public status. Normal assistant prose is not needed on the build screen.
+  };
+
+  publishActivity("", false);
+
   const result = await measure(
     {
-      start: () => "jsx-ai build agent",
+      start: () => "jsx-ai single-turn build agent",
       end: summarizeAgentRun,
       projectId: project.id,
       milestone: project.done + 1,
@@ -905,6 +1085,7 @@ export async function buildMilestone(
         history: [{ role: "user", content: goal }],
         buildPrompt: (history) => <MilestonePrompt history={history} />,
         executeTool: async (call, context) => {
+          const completeSource = streamedSource(true);
           const executed = await measure(
             {
               start: () => `Tool ${call.name}`,
@@ -916,64 +1097,83 @@ export async function buildMilestone(
               }),
               projectId: project.id,
               tool: call.name,
+              sourceChars: completeSource.length,
             },
-            () => executeWorkspaceTool(project.id, call, context),
+            () =>
+              executeWorkspaceTool(
+                project.id,
+                call,
+                context,
+                completeSource,
+                milestone.title,
+              ),
           );
-          activityText += `${executed.note}\n`;
-          onActivity({
-            text: activityText.slice(-1800),
-            note: executed.note,
-            usage: liveUsage,
-          });
+          publishActivity("", false);
           return executed.message;
         },
-        onEvent: (event: AgentEvent<CompletionState>) => {
-          if (event.type === "model_start") {
-            pushActivity("Codex generating build");
+        onEvent: (event: any) => {
+          streamSequence += 1;
+          if (event.type === "text_delta") {
+            appendAssistantDelta(event.delta);
             return;
           }
           if (event.type === "runtime_progress") {
-            const message = publicRuntimeProgress(event.progress.message);
-            if (message) pushActivity(message);
+            const message = publicRuntimeProgress(event.progress?.message);
+            if (message && !streamedAssistantText.includes(BEGIN_SOURCE)) {
+              publicText = message;
+              publishActivity("", false);
+            }
+            return;
+          }
+          if (event.type === "tool_progress") {
+            const progress = event.progress;
+            if (progress?.type === "tool_detected") {
+              logFirstUsefulEvent(`tool_progress.${String(progress.type)}`);
+              log("info", "agent.stream.tool_detected", {
+                projectId: project.id,
+                tool: String(progress.name || ""),
+                sequence: streamSequence,
+              });
+            }
+            if (progress?.type === "tool_ready") {
+              log("info", "agent.stream.tool_ready", {
+                projectId: project.id,
+                tool: String(progress.call?.name || ""),
+                sourceChars: streamedSource(false).length,
+                sequence: streamSequence,
+              });
+            }
             return;
           }
           if (event.type === "model_end") {
-            pushActivity("Model response ready");
-            return;
+            const fullText = String(event.response?.text || "");
+            if (fullText && fullText.length > streamedAssistantText.length) {
+              streamedAssistantText = fullText;
+            }
+            publishSourceProgress(true);
           }
-          if (event.type === "tool_start") {
-            if (event.call.name === "write_file")
-              pushActivity("Writing game.tsx");
-            else if (event.call.name === "complete_milestone")
-              pushActivity("Validating build");
-            return;
-          }
-          if (event.type === "tool_end" && event.result.isError)
-            pushActivity(`${event.call.name} failed`);
         },
+        // Match jsx-ai's documented streaming example exactly: runAgent receives
+        // callLLM as its model call while onEvent remains the single ordered UI stream.
+        call: callLLM,
         callOptions: {
-          model: MODEL(),
-          strategy: STRATEGY,
-          ...(jsxAiRuntime() ? { runtime: jsxAiRuntime() } : {}),
+          // JSX_AI_RUNTIME selects Codex exactly like the standalone jsx-ai demo.
+          // Do not override Codex's configured model here.
           retries: 0,
           timeoutMs: effectiveBuildTimeoutMs(project),
         },
         // One model request per build attempt. Giving the complete current HTML in
         // the prompt removes the list/read -> second-model-turn stall seen on Codex.
         maxSteps: 1,
-        maxToolCalls: 4,
-        maxDurationMs: agentMaxDurationMs(),
+        maxToolCalls: 1,
+        maxDurationMs: effectiveBuildMaxDurationMs(project),
         isComplete: (_response, _toolResults, context) =>
           Boolean(context.state.completion),
       }),
   );
 
   liveUsage = usageFromAgent(result.usage);
-  onActivity({
-    text: activityText.slice(-1800),
-    note: state.completion ? "DONE" : "RETRY",
-    usage: liveUsage,
-  });
+  publishActivity("", false);
 
   if (result.reason !== "completed" || !state.completion) {
     const validation = state.validationError
@@ -984,19 +1184,30 @@ export async function buildMilestone(
     );
   }
 
+  const completedSource = readWorkspaceGameSource(project.id);
+  const renderingIssues = validateMilestoneRendering(
+    completedSource,
+    project.done,
+    milestone,
+    previousUsesThree,
+  );
+  if (renderingIssues.length) {
+    // Do not leave a rejected live workspace visible between retries. Restore the
+    // last accepted source so the preview remains functional while the agent retries.
+    writeWorkspaceFile(project.id, "game.tsx", currentSource);
+    throw new Error(
+      `Rendering contract rejected: ${renderingIssues.join("; ")}`,
+    );
+  }
+
   return {
     html:
       state.compiledHtml ||
       (await compileGameHtml(readWorkspaceGameSource(project.id))),
-    source: readWorkspaceGameSource(project.id),
+    source: completedSource,
     summary: state.completion.summary,
-    nextMilestone: {
-      title: state.completion.nextMilestone,
-      goal: state.completion.nextGoal,
-      costCredits: state.completion.nextCost,
-    },
     usage: liveUsage,
-    activityText,
+    activityText: composeActivity(),
     result,
   };
 }

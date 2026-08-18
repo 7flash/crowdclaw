@@ -1,5 +1,6 @@
 export type ProjectStatus =
   | "planning"
+  | "awaiting_start"
   | "seeding"
   | "waiting_funds"
   | "queued"
@@ -10,11 +11,18 @@ export type ProjectStatus =
   | "failed";
 
 export type MilestoneState = "queued" | "working" | "shipped";
+export type MilestoneRendering = "canvas" | "three_migration" | "three";
+export type MilestoneOrigin = "agent" | "community";
 
 export type Milestone = {
+  key: string;
   title: string;
   goal?: string;
   costCredits: number;
+  votes: number;
+  rendering: MilestoneRendering;
+  origin: MilestoneOrigin;
+  proposedBy?: string;
   state: MilestoneState;
   createdAt: number;
   completedAt?: number;
@@ -41,6 +49,8 @@ export type Project = {
   currentRunId: string | null;
   agentNote: string;
   streamPreview: string;
+  streamUpdatedAt: number;
+  streamEventCount: number;
   lastFundingSyncAt: number;
   fundingError: string;
   failureCount: number;
@@ -83,12 +93,22 @@ export type AgentRun = {
   remainingContextTokens: number;
   usageEstimated: boolean;
   streamChars: number;
+  streamUpdatedAt: number;
+  streamEventCount: number;
   preview: string;
   note: string;
   error: string;
   startedAt: number;
   finishedAt: number;
   chargedCredits: number;
+};
+
+export type MilestoneVote = {
+  id: string;
+  projectId: string;
+  milestoneKey: string;
+  voterKey: string;
+  createdAt: number;
 };
 
 export type ProjectEvent = {

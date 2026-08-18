@@ -36,11 +36,11 @@ export function agentRequestTimeoutMs(): number {
 }
 
 export function buildRequestTimeoutMs(): number {
-  return positiveInt("AGENT_BUILD_TIMEOUT_MS", 150_000, 30_000);
+  return positiveInt("AGENT_BUILD_TIMEOUT_MS", 3 * 60_000, 30_000);
 }
 
 export function agentMaxDurationMs(): number {
-  return positiveInt("AGENT_MAX_DURATION_MS", 8 * 60_000, 30_000);
+  return positiveInt("AGENT_MAX_DURATION_MS", 4 * 60_000, 30_000);
 }
 
 export function solanaRpcTimeoutMs(): number {

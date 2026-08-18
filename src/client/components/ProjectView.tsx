@@ -14,6 +14,9 @@ export type ProjectViewProps = {
   artifactCode: string | null;
   artifactCodeVersion: number | null;
   previewRevision: number;
+  proposalTitle: string;
+  proposalGoal: string;
+  proposing: boolean;
   steerText: string;
   steerAmount: string;
   steering: boolean;
@@ -23,6 +26,11 @@ export type ProjectViewProps = {
   onSyncFunding: () => void;
   onDevFund: () => void;
   onShare: () => void;
+  onStartBuild: () => void;
+  onVoteMilestone: (milestoneKey: string) => void;
+  onProposalTitle: (value: string) => void;
+  onProposalGoal: (value: string) => void;
+  onProposeMilestone: () => void;
   onSteerText: (value: string) => void;
   onSteerAmount: (value: string) => void;
   onSteer: () => void;
@@ -38,22 +46,31 @@ export function ProjectView(props: ProjectViewProps) {
     treasuryGrants,
     usage,
     lamportsPerCredit,
+    events,
   } = props.bundle;
   const latestArtifact = artifacts[artifacts.length - 1];
+  // `null` means follow the latest shipped artifact. `-1` is the explicit
+  // live-workspace view while a newer milestone is being built.
+  const liveSelected = props.selectedVersion === -1;
+  const requestedVersion =
+    props.selectedVersion != null && props.selectedVersion > 0
+      ? props.selectedVersion
+      : null;
   const currentArtifact =
-    props.selectedVersion != null
-      ? artifacts.find((item) => item.version === props.selectedVersion) ||
+    requestedVersion != null
+      ? artifacts.find((item) => item.version === requestedVersion) ||
         latestArtifact
       : latestArtifact;
   const next = project.milestones[project.done];
   const shipped = project.milestones.slice(0, project.done);
-  const upcoming = project.milestones.slice(project.done, project.done + 4);
+  const upcoming = project.milestones.slice(project.done, project.done + 12);
   const buildActive = [
     "queued",
     "working",
     "validating",
     "publishing",
   ].includes(project.status);
+  const awaitingStart = project.status === "awaiting_start";
   const retrying =
     project.status === "queued" &&
     project.retryAt > 0 &&
@@ -67,15 +84,25 @@ export function ProjectView(props: ProjectViewProps) {
     (run) => run.status === "running" && run.kind === "build",
   );
   const totalTokens = usage.totalTokens;
-  const activityLines = buildActivityLines(
+  const activityItems = buildActivityItems(
+    events,
     project.streamPreview,
     project.agentNote,
+    runningBuild?.startedAt || 0,
   );
+  const liveBuildPreview = parseBuildPreview(project.streamPreview);
   const workspaceWritten =
     /(?:^|\n)(?:WRITE game\.tsx|Writing game\.tsx)(?:\n|$)/i.test(
       project.streamPreview,
     );
   const waitingForFirstSource =
+    Boolean(runningBuild) &&
+    buildActive &&
+    !currentArtifact &&
+    !workspaceWritten &&
+    !["validating", "publishing"].includes(project.status);
+  const waitingForAgentStart =
+    !runningBuild &&
     buildActive &&
     !currentArtifact &&
     !workspaceWritten &&
@@ -92,16 +119,17 @@ export function ProjectView(props: ProjectViewProps) {
     project.error,
     retrying,
   );
-  const stageHeight =
-    !currentArtifact && buildActive
-      ? "clamp(300px, 38vw, 430px)"
+  const stageHeight = awaitingStart
+    ? "96px"
+    : !currentArtifact && buildActive
+      ? "clamp(190px, 23vw, 260px)"
       : "clamp(360px, 48vw, 560px)";
   const seed = treasuryGrants[0];
   const visibleSeed = seed && seed.status !== "failed" ? seed : undefined;
   const openSteering = steering
     .filter((item) => item.status === "open")
     .sort((a, b) => b.influence - a.influence);
-  const showLiveWorkspace = props.selectedVersion == null && buildActive;
+  const showLiveWorkspace = liveSelected && buildActive;
   const playUrl =
     showLiveWorkspace || !currentArtifact
       ? `/api/projects/${encodeURIComponent(project.id)}/preview?rev=${encodeURIComponent(String(props.previewRevision))}`
@@ -116,32 +144,9 @@ export function ProjectView(props: ProjectViewProps) {
         <a className="cc-icon-link" href="/" aria-label="Back">
           ←
         </a>
-        <div className="flex min-w-0 items-center gap-2">
-          <h1 className="cc-project-title font-display m-0 min-w-0 max-w-[calc(100%_-_34px)] truncate text-[clamp(2.15rem,6vw,3.25rem)] font-extrabold uppercase leading-[.88] tracking-[-.02em]">
-            {project.name}
-          </h1>
-          <details className="relative shrink-0">
-            <summary
-              className="cursor-pointer list-none px-1 pb-0.5 font-data text-[13px] tracking-[.18em] text-[var(--dimmer)] hover:text-[var(--dim)]"
-              aria-label="Project details"
-              title="Project details"
-            >
-              ···
-            </summary>
-            <div className="absolute right-0 top-7 z-30 w-[min(520px,calc(100vw-40px))] rounded-[6px] border border-[var(--line)] bg-[#081115] p-4 shadow-2xl">
-              {project.summary ? (
-                <div className="text-[11px] leading-5 text-[var(--dim)]">
-                  {project.summary}
-                </div>
-              ) : null}
-              <div
-                className={`${project.summary ? "mt-3 border-t border-[var(--line)] pt-3" : ""} whitespace-pre-wrap font-data text-[9px] leading-5 text-[var(--dimmer)]`}
-              >
-                {project.idea}
-              </div>
-            </div>
-          </details>
-        </div>
+        <h1 className="cc-project-title font-display m-0 min-w-0 truncate text-[clamp(2.15rem,6vw,3.25rem)] font-extrabold uppercase leading-[.88] tracking-[-.02em]">
+          {project.name}
+        </h1>
         <button
           className="cc-btn max-[620px]:col-span-2 max-[620px]:w-full"
           onClick={props.onShare}
@@ -187,7 +192,7 @@ export function ProjectView(props: ProjectViewProps) {
                 {buildActive ? (
                   <button
                     className={`cc-version-chip ${showLiveWorkspace ? "cc-version-on" : ""}`}
-                    onClick={() => props.onVersion(null)}
+                    onClick={() => props.onVersion(-1)}
                     aria-label="Show live workspace"
                     title="Live workspace"
                   >
@@ -252,7 +257,10 @@ export function ProjectView(props: ProjectViewProps) {
             ) : null}
           </div>
         </div>
-        {buildActive && !waitingForFirstSource ? (
+        {buildActive &&
+        !waitingForFirstSource &&
+        !waitingForAgentStart &&
+        (showLiveWorkspace || !currentArtifact) ? (
           <div className="flex min-h-[30px] items-center gap-2 border-b border-[var(--line)] bg-[#071014] px-3 font-data text-[9px] text-[var(--dimmer)]">
             <span className="cc-spinner shrink-0" aria-hidden="true" />
             <span className="min-w-0 truncate">{stageActivity}</span>
@@ -266,11 +274,23 @@ export function ProjectView(props: ProjectViewProps) {
           </div>
         ) : null}
         <div className="cc-stage-body relative" style={{ height: stageHeight }}>
-          {waitingForFirstSource ? (
+          {awaitingStart ? (
+            <div className="flex h-full items-center justify-end px-6">
+              <button
+                className="cc-btn cc-btn-primary shrink-0"
+                onClick={props.onStartBuild}
+              >
+                START BUILD →
+              </button>
+            </div>
+          ) : waitingForFirstSource ? (
             <BuildWaitingSurface
-              activity={activityLines}
-              fallback={stageActivity}
+              activity={activityItems}
+              assistant={liveBuildPreview.assistant}
+              source={liveBuildPreview.source}
             />
+          ) : waitingForAgentStart ? (
+            <QueueWaitingSurface label={stageActivity} retrying={retrying} />
           ) : props.tab === "code" && currentArtifact && !showLiveWorkspace ? (
             <pre className="cc-code">
               {props.artifactCodeVersion === currentArtifact.version &&
@@ -280,6 +300,7 @@ export function ProjectView(props: ProjectViewProps) {
             </pre>
           ) : (
             <iframe
+              key={playUrl}
               className="cc-preview-frame block h-full w-full border-0 bg-black"
               src={playUrl}
               sandbox="allow-scripts allow-pointer-lock"
@@ -291,13 +312,6 @@ export function ProjectView(props: ProjectViewProps) {
 
       <LiveStrip
         totalTokens={totalTokens}
-        currentUsagePending={Boolean(
-          runningBuild &&
-          runningBuild.inputTokens +
-            runningBuild.outputTokens +
-            runningBuild.thinkingTokens ===
-            0,
-        )}
         usdEstimate={usage.usdEstimate}
         walletAddress={project.walletAddress}
         solBalance={solBalance}
@@ -318,6 +332,13 @@ export function ProjectView(props: ProjectViewProps) {
         active={buildActive}
         currentVersion={currentArtifact?.version}
         onVersion={props.onVersion}
+        onVoteMilestone={props.onVoteMilestone}
+        proposalTitle={props.proposalTitle}
+        proposalGoal={props.proposalGoal}
+        proposing={props.proposing}
+        onProposalTitle={props.onProposalTitle}
+        onProposalGoal={props.onProposalGoal}
+        onProposeMilestone={props.onProposeMilestone}
       />
 
       {hasCommunity ? (
@@ -344,7 +365,6 @@ export function ProjectView(props: ProjectViewProps) {
 
 function LiveStrip(props: {
   totalTokens: number;
-  currentUsagePending: boolean;
   usdEstimate: number;
   walletAddress: string;
   solBalance: number;
@@ -357,18 +377,9 @@ function LiveStrip(props: {
   onDevFund?: () => void;
 }) {
   return (
-    <div className="cc-live-strip block">
-      <div className="grid w-full grid-cols-2 gap-x-5 gap-y-3 min-[720px]:grid-cols-4">
-        <StatBlock
-          label="REPORTED TOKENS"
-          value={`${integer(props.totalTokens)} TOK`}
-          subtle
-          title={
-            props.currentUsagePending
-              ? "The active Codex turn reports usage at model_end; this is provider-reported usage from completed model steps."
-              : "Provider-reported usage from completed model steps."
-          }
-        />
+    <section className="border-b border-[var(--line)] py-4">
+      <div className="grid grid-cols-2 gap-x-5 gap-y-4 min-[720px]:grid-cols-4">
+        <StatBlock label="TOKENS" value={integer(props.totalTokens)} subtle />
         <StatBlock
           label="EST. USD"
           value={`$${formatUsd(props.usdEstimate)}`}
@@ -377,6 +388,7 @@ function LiveStrip(props: {
         <StatBlock
           label="DONATED"
           value={`${number(props.totalDonatedSol, 4)} SOL`}
+          title={`Observed on-chain balance: ${number(props.solBalance, 4)} SOL`}
         />
         <StatBlock
           label="RUNWAY"
@@ -385,10 +397,10 @@ function LiveStrip(props: {
         />
       </div>
 
-      <div className="mt-3 grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-center gap-3 border-t border-[var(--line)] pt-3 max-[620px]:grid-cols-[auto_minmax(0,1fr)_auto]">
-        <span className="cc-label text-[var(--bone)]">FUND</span>
+      <div className="mt-4 grid grid-cols-[auto_minmax(0,1fr)_auto_auto] items-start gap-x-3 gap-y-2 border-t border-[var(--line)] pt-3 max-[680px]:grid-cols-[auto_minmax(0,1fr)_auto]">
+        <span className="cc-label pt-0.5 text-[var(--bone)]">FUND</span>
         <button
-          className="min-w-0 break-all border-0 bg-transparent p-0 text-left font-data text-[10px] leading-4 text-[var(--dim)] hover:text-[var(--mint)]"
+          className="min-w-0 select-all break-all border-0 bg-transparent p-0 text-left font-data text-[10px] leading-4 tracking-[.01em] text-[var(--dim)] hover:text-[var(--mint)]"
           onClick={props.onCopyWallet}
           title="Copy project wallet"
         >
@@ -398,24 +410,22 @@ function LiveStrip(props: {
           COPY
         </button>
         <button
-          className="cc-mini max-[620px]:col-start-3"
+          className="cc-mini max-[680px]:col-start-3"
           disabled={props.refreshing}
           onClick={props.onSyncFunding}
         >
           {props.refreshing ? "…" : "SYNC"}
         </button>
-        {props.liveState !== "live" ? (
-          <span className="col-span-full font-data text-[8px] uppercase tracking-[.12em] text-[var(--dimmer)]">
-            {props.liveState}
-          </span>
-        ) : null}
         {props.onDevFund ? (
-          <button className="cc-mini" onClick={props.onDevFund}>
+          <button
+            className="cc-mini col-start-2 w-max"
+            onClick={props.onDevFund}
+          >
             DEV
           </button>
         ) : null}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -425,6 +435,7 @@ function StatBlock(props: {
   accent?: "ok" | "warn";
   subtle?: boolean;
   title?: string;
+  meta?: string;
 }) {
   const tone =
     props.accent === "warn"
@@ -439,9 +450,14 @@ function StatBlock(props: {
       <div className="font-data text-[8px] uppercase tracking-[.12em] text-[var(--dimmer)]">
         {props.label}
       </div>
-      <div className={`mt-1 font-data whitespace-nowrap text-[10px] ${tone}`}>
+      <div className={`mt-1 font-data whitespace-nowrap text-[11px] ${tone}`}>
         {props.value}
       </div>
+      {props.meta ? (
+        <div className="mt-1 font-data text-[8px] leading-3 text-[var(--dimmer)]">
+          {props.meta}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -565,7 +581,17 @@ function Roadmap(props: {
   active: boolean;
   currentVersion?: number;
   onVersion: (version: number | null) => void;
+  onVoteMilestone: (milestoneKey: string) => void;
+  proposalTitle: string;
+  proposalGoal: string;
+  proposing: boolean;
+  onProposalTitle: (value: string) => void;
+  onProposalGoal: (value: string) => void;
+  onProposeMilestone: () => void;
 }) {
+  const proposalTitle = props.proposalTitle || "";
+  const proposalGoal = props.proposalGoal || "";
+
   const progress = props.total
     ? Math.min(100, (props.done / props.total) * 100)
     : 0;
@@ -606,155 +632,294 @@ function Roadmap(props: {
 
         {props.upcoming.map((mile, offset) => (
           <div
-            key={`${mile.title}-${props.done + offset}`}
-            className={`cc-milestone ${offset === 0 ? "cc-next" : "opacity-45"}`}
-            title={mile.goal || mile.title}
+            key={mile.key || `${mile.title}-${props.done + offset}`}
+            className={`grid grid-cols-[26px_minmax(0,1fr)_auto] items-start gap-3 rounded-[6px] border px-4 py-3 ${offset === 0 ? "border-[rgba(255,92,43,.38)] bg-[rgba(255,92,43,.045)]" : "border-[var(--line)] bg-white/[.012]"}`}
           >
-            <span className="font-data text-[11px] text-[var(--dimmer)]">
+            <span className="pt-0.5 font-data text-[10px] text-[var(--dimmer)]">
               {props.done + offset + 1}
             </span>
-            <span className="truncate text-sm leading-[1.35]">
-              {mile.title}
+            <span className="min-w-0">
+              <span className="flex min-w-0 items-center gap-2">
+                <span
+                  className={`min-w-0 truncate text-[13px] leading-5 ${offset === 0 ? "text-[var(--bone)]" : "text-[var(--dim)]"}`}
+                >
+                  {mile.title}
+                </span>
+                {mile.rendering === "three_migration" ? (
+                  <span className="shrink-0 font-data text-[8px] uppercase tracking-[.12em] text-[var(--mint)]">
+                    3D
+                  </span>
+                ) : mile.origin === "community" ? (
+                  <span className="shrink-0 font-data text-[8px] uppercase tracking-[.1em] text-[var(--dimmer)]">
+                    COMMUNITY
+                  </span>
+                ) : null}
+              </span>
+              {mile.goal ? (
+                <span className="mt-1 block text-[10px] leading-4 text-[var(--dimmer)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
+                  {mile.goal}
+                </span>
+              ) : null}
             </span>
-            <span aria-hidden="true" />
+            {offset > 0 ? (
+              <button
+                className="cc-mini min-w-[54px] whitespace-nowrap"
+                onClick={() => props.onVoteMilestone(mile.key)}
+                aria-label={`Upvote ${mile.title}`}
+              >
+                ▲ {Math.max(0, Number(mile.votes || 0))}
+              </button>
+            ) : (
+              <span aria-hidden="true" />
+            )}
           </div>
         ))}
       </div>
+
+      <details className="mt-3 rounded-[6px] border border-[var(--line)] bg-white/[.01] px-4 py-3">
+        <summary className="cursor-pointer list-none font-data text-[9px] uppercase tracking-[.12em] text-[var(--dimmer)]">
+          + SUGGEST MILESTONE
+        </summary>
+        <div className="mt-3 grid gap-2">
+          <input
+            className="cc-input"
+            value={proposalTitle}
+            maxLength={90}
+            placeholder="Milestone title"
+            onInput={(event: Event) =>
+              props.onProposalTitle(
+                (event.currentTarget as HTMLInputElement).value,
+              )
+            }
+          />
+          <textarea
+            className="cc-input min-h-[76px] resize-y py-2"
+            value={proposalGoal}
+            maxLength={360}
+            placeholder="Description"
+            onInput={(event: Event) =>
+              props.onProposalGoal(
+                (event.currentTarget as HTMLTextAreaElement).value,
+              )
+            }
+          />
+          <div className="flex justify-end">
+            <button
+              className="cc-mini shrink-0"
+              disabled={
+                props.proposing ||
+                proposalTitle.trim().length < 3 ||
+                proposalGoal.trim().length < 8
+              }
+              onClick={props.onProposeMilestone}
+            >
+              {props.proposing ? "ADDING…" : "ADD"}
+            </button>
+          </div>
+        </div>
+      </details>
     </section>
   );
 }
 
-function BuildWaitingSurface(props: { activity: string[]; fallback: string }) {
-  const visible = props.activity.length
-    ? props.activity.slice(-3)
-    : [props.fallback];
+type BuildActivityItem = { text: string; createdAt: number };
+
+function QueueWaitingSurface(props: { label: string; retrying: boolean }) {
   return (
-    <div className="relative flex h-full flex-col items-center justify-center overflow-hidden bg-[#050a0c] px-6">
+    <div className="relative flex h-full overflow-hidden bg-[#050a0c]">
       <div
-        className="absolute inset-0 opacity-50"
+        className="absolute inset-0 opacity-20"
         style={{
           backgroundImage:
             "linear-gradient(#10202855 1px,transparent 1px),linear-gradient(90deg,#10202855 1px,transparent 1px)",
           backgroundSize: "32px 32px",
         }}
       />
-      <svg
-        className="relative z-10 h-[88px] w-[88px]"
-        viewBox="0 0 100 100"
-        role="img"
-        aria-label="Codex build active"
-      >
-        <circle
-          cx="50"
-          cy="50"
-          r="31"
-          fill="none"
-          stroke="#193039"
-          strokeWidth="1"
-        />
-        <circle
-          cx="50"
-          cy="50"
-          r="31"
-          fill="none"
-          stroke="#ff5c2b"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeDasharray="34 162"
-        >
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            from="0 50 50"
-            to="360 50 50"
-            dur="1.15s"
-            repeatCount="indefinite"
-          />
-        </circle>
-        <circle
-          cx="50"
-          cy="50"
-          r="20"
-          fill="none"
-          stroke="#4fe3c1"
-          strokeWidth="1"
-          strokeLinecap="round"
-          strokeDasharray="18 108"
-          opacity=".55"
-        >
-          <animateTransform
-            attributeName="transform"
-            type="rotate"
-            from="360 50 50"
-            to="0 50 50"
-            dur="1.8s"
-            repeatCount="indefinite"
-          />
-        </circle>
-        <circle cx="50" cy="50" r="4.5" fill="#ff5c2b">
-          <animate
-            attributeName="opacity"
-            values="1;.35;1"
-            dur="1.1s"
-            repeatCount="indefinite"
-          />
-        </circle>
-      </svg>
-
-      <div className="relative z-10 mt-8 w-full max-w-[620px] font-data text-[10px] leading-5">
-        {visible.map((line, index) => (
-          <div
-            key={`${line}-${index}`}
-            className={`flex min-w-0 items-start gap-3 border-t border-[var(--line)] py-2 ${
-              index === visible.length - 1
-                ? "text-[var(--bone)]"
-                : "text-[var(--dimmer)]"
-            }`}
-          >
+      <div className="relative z-10 m-auto w-full max-w-[620px] px-6 py-7">
+        {props.label ? (
+          <div className="flex items-center gap-3 border-y border-[var(--line)] py-3 font-data text-[10px] text-[var(--bone)]">
             <span
-              className={
-                index === visible.length - 1
-                  ? "text-[var(--mint)]"
-                  : "text-[var(--dimmer)]"
-              }
+              className="relative flex h-2.5 w-2.5 items-center justify-center"
+              aria-hidden="true"
             >
-              ·
+              <span
+                className={`absolute h-full w-full animate-ping rounded-full ${props.retrying ? "bg-[var(--claw)]" : "bg-[var(--mint)]"} opacity-20`}
+              />
+              <span
+                className={`relative h-1.5 w-1.5 rounded-full ${props.retrying ? "bg-[var(--claw)]" : "bg-[var(--mint)]"}`}
+              />
             </span>
-            <span className="min-w-0 flex-1 break-words">{line}</span>
+            <span>{props.label}</span>
           </div>
-        ))}
+        ) : null}
+        <svg
+          className={`${props.label ? "mt-3" : ""} block h-[2px] w-full overflow-hidden bg-[var(--line)]`}
+          viewBox="0 0 100 2"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <rect x="-24" y="0" width="24" height="2" fill="#ff5c2b">
+            <animate
+              attributeName="x"
+              values="-24;100"
+              dur="1.25s"
+              repeatCount="indefinite"
+            />
+          </rect>
+        </svg>
       </div>
     </div>
   );
 }
 
-function buildActivityLines(preview: string, note: string): string[] {
-  const lines = preview
+function BuildWaitingSurface(props: {
+  activity: BuildActivityItem[];
+  assistant: string;
+  source: string;
+}) {
+  const source = props.source;
+  const latest = [...props.activity]
+    .reverse()
+    .find((item) => item.text !== source && item.text !== props.assistant);
+  return (
+    <div className="relative flex h-full overflow-hidden bg-[#050a0c]">
+      <div
+        className="absolute inset-0 opacity-25"
+        style={{
+          backgroundImage:
+            "linear-gradient(#10202855 1px,transparent 1px),linear-gradient(90deg,#10202855 1px,transparent 1px)",
+          backgroundSize: "32px 32px",
+        }}
+      />
+
+      <div className="relative z-10 m-auto w-full max-w-[720px] px-6 py-7">
+        {props.assistant ? (
+          <div className="mb-3 truncate font-data text-[9px] text-[var(--dimmer)]">
+            {props.assistant}
+          </div>
+        ) : latest ? (
+          <div className="mb-3 truncate font-data text-[9px] text-[var(--dimmer)]">
+            {latest.text}
+          </div>
+        ) : null}
+
+        {source ? (
+          <div className="flex items-center gap-3 border-y border-[var(--line)] py-3">
+            <span
+              className="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center"
+              aria-hidden="true"
+            >
+              <span className="absolute h-full w-full animate-ping rounded-full bg-[var(--mint)] opacity-25" />
+              <span className="relative h-1.5 w-1.5 rounded-full bg-[var(--mint)]" />
+            </span>
+            <span className="min-w-0 font-data text-[10px] leading-5 text-[var(--bone)]">
+              {source}
+            </span>
+          </div>
+        ) : null}
+
+        <svg
+          className={`${source ? "mt-3" : ""} block h-[2px] w-full overflow-hidden bg-[var(--line)]`}
+          viewBox="0 0 100 2"
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <rect x="-24" y="0" width="24" height="2" fill="#ff5c2b">
+            <animate
+              attributeName="x"
+              values="-24;100"
+              dur="1.25s"
+              repeatCount="indefinite"
+            />
+          </rect>
+        </svg>
+      </div>
+    </div>
+  );
+}
+
+function parseBuildPreview(preview: string): {
+  assistant: string;
+  source: string;
+} {
+  let assistant = "";
+  let source = "";
+  for (const raw of preview.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^A\|/i.test(line)) assistant = line.slice(2).trim().slice(0, 360);
+    if (/^G\|/i.test(line)) source = line.slice(2).trim().slice(0, 180);
+  }
+  return { assistant, source };
+}
+
+function buildActivityItems(
+  events: ProjectBundle["events"],
+  preview: string,
+  note: string,
+  runStartedAt: number,
+): BuildActivityItem[] {
+  const eventItems = events
+    .filter(
+      (event) =>
+        event.type === "agent.activity" &&
+        (!runStartedAt || event.createdAt >= runStartedAt - 1000),
+    )
+    .slice(0, 8)
+    .reverse()
+    .map((event) => ({
+      text: cleanBuildActivity(event.message),
+      createdAt: event.createdAt,
+    }))
+    .filter((item) => Boolean(item.text));
+
+  const previewItems = preview
     .split(/\r?\n/)
-    .map((line) => line.replace(/^>\s*/, "").trim())
+    .map((line) => cleanBuildActivity(line.replace(/^>\s*/, "")))
     .filter(Boolean)
-    .map((line) => {
-      if (/^WRITE game\.tsx$/i.test(line)) return "Writing game.tsx";
-      if (/^DONE$/i.test(line)) return "Build response complete";
-      return line;
-    });
-  const cleanNote = note.replace(/\s+/g, " ").trim();
+    .map((line) => ({ text: line, createdAt: 0 }));
+
+  const cleanNote = cleanBuildActivity(note);
+  if (cleanNote) previewItems.push({ text: cleanNote, createdAt: 0 });
+
+  return dedupeActivityItems([...eventItems, ...previewItems]).slice(-5);
+}
+
+function cleanBuildActivity(value: string): string {
+  const line = value.replace(/\s+/g, " ").trim();
+  if (!line) return "";
   if (
-    cleanNote &&
-    !/^(?:BUILDING|READY|DONE|STARTING|VALIDATE|PUBLISH|SHIPPING|V\d+|BUSY|TIMEOUT|RETRY)$/i.test(
-      cleanNote,
+    /^(?:BUILDING|READY|DONE|STARTING|VALIDATE|PUBLISH|SHIPPING|V\d+|BUSY|TIMEOUT|RETRY)$/i.test(
+      line,
     )
   )
-    lines.push(cleanNote);
-  const deduped: string[] = [];
-  for (const line of lines) {
-    if (deduped[deduped.length - 1] === line) continue;
-    deduped.push(line.slice(0, 180));
+    return "";
+  if (
+    /^(?:Codex generating build|Model running|Codex (?:turn|command) started|Model step started|Model response received)$/i.test(
+      line,
+    )
+  )
+    return "";
+  if (
+    /configured service tier .*not advertised as supported|service tier .*will be omitted/i.test(
+      line,
+    )
+  )
+    return "";
+  if (/^A\|/i.test(line)) return line.slice(2).trim().slice(0, 360);
+  if (/^G\|/i.test(line)) return line.slice(2).trim().slice(0, 180);
+  if (/^WRITE game\.tsx$/i.test(line)) return "Writing game.tsx";
+  if (/^COMMIT game\.tsx$/i.test(line)) return "Committing game.tsx";
+  if (/^DONE$/i.test(line)) return "Build response complete";
+  return line.slice(0, 180);
+}
+
+function dedupeActivityItems(items: BuildActivityItem[]): BuildActivityItem[] {
+  const out: BuildActivityItem[] = [];
+  for (const item of items) {
+    if (!item.text || out[out.length - 1]?.text === item.text) continue;
+    out.push(item);
   }
-  const rich = deduped.filter(
-    (line) => !/^Codex generating build$/i.test(line),
-  );
-  return (rich.length ? rich : deduped).slice(-5);
+  return out;
 }
 
 function integer(value: number): string {
@@ -773,29 +938,32 @@ function creditsToSol(credits: number, lamportsPerCredit: number): number {
 }
 
 function stageActivityLabel(
-  status: ProjectStatus,
+  _status: ProjectStatus,
   note: string,
-  error: string,
-  retrying: boolean,
+  _error: string,
+  _retrying: boolean,
 ): string {
-  if (retrying) {
-    if (/(?:request\s+timed\s*out|timed\s*out|timeout)/i.test(error))
-      return "Model request timed out · retrying automatically";
-    return "Retry scheduled";
-  }
   const clean = note.replace(/\s+/g, " ").trim();
+  if (!clean) return "";
   if (
-    clean &&
-    !/^(?:BUILDING|READY|DONE|STARTING|VALIDATE|PUBLISH|SHIPPING|V\d+|BUSY|TIMEOUT|RETRY)$/i.test(
+    /configured service tier .*not advertised as supported|service tier .*will be omitted/i.test(
       clean,
     )
   )
-    return clean.slice(0, 160);
-  if (status === "queued") return "Starting Codex";
-  if (status === "working") return "Codex generating build";
-  if (status === "validating") return "Validating build";
-  if (status === "publishing") return "Publishing build";
-  return "Working";
+    return "";
+  if (
+    /^(?:Codex (?:turn|command) started|Model step started|Model response received)$/i.test(
+      clean,
+    )
+  )
+    return "";
+  if (
+    /^(?:BUILDING|READY|DONE|STARTING|VALIDATE|PUBLISH|SHIPPING|V\d+|BUSY|TIMEOUT|RETRY)$/i.test(
+      clean,
+    )
+  )
+    return "";
+  return clean.slice(0, 160);
 }
 
 function statusLabel(
@@ -804,6 +972,7 @@ function statusLabel(
   retrying = false,
 ): string {
   if (status === "failed") return publicErrorLabel(error);
+  if (status === "awaiting_start") return "";
   if (status === "seeding") return "STARTING";
   if (status === "waiting_funds") return "PAUSED FOR FUNDS";
   if (retrying) return "RETRYING";

@@ -5,9 +5,14 @@ import { Database, z } from "sqlite-zod-orm";
 import { databasePath } from "../config";
 
 const MilestoneSchema = z.object({
+  key: z.string().default(""),
   title: z.string(),
   goal: z.string().default(""),
   costCredits: z.number(),
+  votes: z.number().int().default(0),
+  rendering: z.enum(["canvas", "three_migration", "three"]).optional(),
+  origin: z.enum(["agent", "community"]).default("agent"),
+  proposedBy: z.string().optional(),
   state: z.enum(["queued", "working", "shipped"]),
   createdAt: z.number().int(),
   completedAt: z.number().int().optional(),
@@ -21,6 +26,7 @@ const ProjectSchema = z.object({
   summary: z.string(),
   status: z.enum([
     "planning",
+    "awaiting_start",
     "seeding",
     "waiting_funds",
     "queued",
@@ -42,6 +48,8 @@ const ProjectSchema = z.object({
   currentRunId: z.string().nullable().default(null),
   agentNote: z.string().default(""),
   streamPreview: z.string().default(""),
+  streamUpdatedAt: z.number().int().default(0),
+  streamEventCount: z.number().int().default(0),
   lastFundingSyncAt: z.number().int().default(0),
   fundingError: z.string().default(""),
   failureCount: z.number().int().default(0),
@@ -80,12 +88,22 @@ const RunSchema = z.object({
   contextWindow: z.number().int().default(1048576),
   usageEstimated: z.boolean().default(false),
   streamChars: z.number().int().default(0),
+  streamUpdatedAt: z.number().int().default(0),
+  streamEventCount: z.number().int().default(0),
   preview: z.string().default(""),
   note: z.string().default(""),
   error: z.string().default(""),
   startedAt: z.number().int(),
   finishedAt: z.number().int().default(0),
   chargedCredits: z.number().default(0),
+});
+
+const MilestoneVoteSchema = z.object({
+  voteId: z.string(),
+  projectId: z.string(),
+  milestoneKey: z.string(),
+  voterKey: z.string(),
+  createdAt: z.number().int(),
 });
 
 const EventSchema = z.object({
@@ -194,6 +212,7 @@ export const db = new Database(dbPath, {
   artifacts: ArtifactSchema,
   runs: RunSchema,
   events: EventSchema,
+  milestoneVotes: MilestoneVoteSchema,
   fundingObservations: FundingObservationSchema,
   donations: DonationSchema,
   treasuryGrants: TreasuryGrantSchema,

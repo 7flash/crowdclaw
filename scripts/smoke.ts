@@ -96,10 +96,101 @@ projectsRepository.setPlanningResult(
   "smoke-game",
   "smoke",
   [
-    toMilestone({ title: "Playable loop", costCredits: 2 }),
-    toMilestone({ title: "Enemy pressure", costCredits: 2 }),
-    toMilestone({ title: "Score polish", costCredits: 2 }),
+    toMilestone({
+      title: "Playable loop",
+      costCredits: 2,
+      rendering: "canvas",
+    }),
+    toMilestone({
+      title: "Enemy pressure",
+      costCredits: 2,
+      rendering: "canvas",
+    }),
+    toMilestone({ title: "Score polish", costCredits: 2, rendering: "canvas" }),
+    toMilestone({
+      title: "Three.js migration",
+      costCredits: 3,
+      rendering: "three_migration",
+    }),
+    toMilestone({ title: "3D boss arena", costCredits: 3, rendering: "three" }),
   ],
+);
+
+const planned = projectsRepository.get(project.id);
+assert(
+  planned?.status === "awaiting_start",
+  "publishing a roadmap should wait for explicit creator start confirmation",
+);
+const voteTarget = planned?.milestones[2];
+assert(
+  Boolean(voteTarget?.key),
+  "planned milestones should have stable vote keys",
+);
+const vote = projectsRepository.voteMilestone(
+  project.id,
+  voteTarget!.key,
+  "smoke-voter",
+);
+assert(vote?.accepted === true, "future milestone vote should be accepted");
+assert(
+  vote?.project.milestones[1]?.key === voteTarget!.key,
+  "higher-voted future milestone should move earlier",
+);
+assert(
+  projectsRepository.voteMilestone(project.id, voteTarget!.key, "smoke-voter")
+    ?.accepted === false,
+  "same voter should not vote twice for one milestone",
+);
+
+const threeOnly = projectsRepository
+  .get(project.id)!
+  .milestones.find((item) => item.rendering === "three");
+assert(
+  Boolean(threeOnly),
+  "roadmap should contain post-migration Three.js work",
+);
+projectsRepository.voteMilestone(project.id, threeOnly!.key, "three-voter");
+const dependencySafe = projectsRepository.get(project.id)!;
+const migrationIndex = dependencySafe.milestones.findIndex(
+  (item) => item.rendering === "three_migration",
+);
+const threeIndex = dependencySafe.milestones.findIndex(
+  (item) => item.key === threeOnly!.key,
+);
+assert(
+  migrationIndex >= 0 && threeIndex > migrationIndex,
+  "Three.js-only work must not vote ahead of the migration dependency",
+);
+
+const proposal = projectsRepository.proposeMilestone(project.id, {
+  title: "Risk Reward Pickups",
+  goal: "Add optional dangerous pickups that create stronger score multipliers.",
+  voterKey: "proposal-voter",
+});
+assert(
+  proposal?.accepted === true,
+  "community milestone proposal should be accepted",
+);
+const proposed = proposal?.project.milestones.find(
+  (item) => item.key === proposal.milestoneKey,
+);
+assert(
+  proposed?.origin === "community" && proposed.votes === 1,
+  "community proposal should join the roadmap with the proposer upvote",
+);
+assert(
+  projectsRepository.proposeMilestone(project.id, {
+    title: "Risk Reward Pickups",
+    goal: "Duplicate proposal should not be accepted.",
+    voterKey: "another-voter",
+  })?.accepted === false,
+  "duplicate milestone title should be rejected",
+);
+
+const started = projectsRepository.startBuild(project.id);
+assert(
+  started?.status === "queued",
+  "creator confirmation should move a funded/float-backed project into the build queue",
 );
 
 const buildRun = projectsRepository.createRun({

@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import { measure } from "measure-fn";
-import { buildMilestone, planGame, type AgentUsage } from "../agent/jsx-agent";
+import {
+  buildMilestone,
+  planGame,
+  type AgentStreamUpdate,
+  type AgentUsage,
+} from "../agent/jsx-agent";
 import { sealHtml, toMilestone, validateArtifactHtml } from "../agent/output";
 import { modelName } from "../config";
 import { projectsRepository } from "../db/project-repository";
@@ -49,7 +54,13 @@ function progressWriter(projectId: string, runId: string) {
   let lastWrite = 0;
   let lastLength = 0;
   let lastNote = "";
-  return (text: string, note: string, usage: AgentUsage, force = false) => {
+  return (
+    text: string,
+    note: string,
+    usage: AgentUsage,
+    force = false,
+    streamEventCount?: number,
+  ) => {
     const t = Date.now();
     const noteChanged = note !== lastNote;
     if (
@@ -63,13 +74,22 @@ function progressWriter(projectId: string, runId: string) {
     lastLength = text.length;
     lastNote = note;
     const preview = text.slice(-1800);
+    const streamedAt = Date.now();
     projectsRepository.updateRunUsage(runId, {
       ...usagePatch(usage),
       streamChars: text.length,
+      streamUpdatedAt: streamedAt,
+      ...(streamEventCount !== undefined ? { streamEventCount } : {}),
       preview,
       note,
     });
-    projectsRepository.updateLiveRun(projectId, runId, preview, note);
+    projectsRepository.updateLiveRun(
+      projectId,
+      runId,
+      preview,
+      note,
+      streamEventCount,
+    );
   };
 }
 
@@ -87,6 +107,43 @@ function planningPreview(
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function planningLiveWriter(projectId: string, runId: string) {
+  let assistantText = "";
+  let status = "";
+  let lastWrite = 0;
+  let lastLength = 0;
+  return (update: AgentStreamUpdate, force = false) => {
+    if (update.kind === "text") assistantText = update.text;
+    else status = update.text;
+    const now = Date.now();
+    const preview = assistantText ? `A|${assistantText}` : "";
+    if (
+      !force &&
+      update.kind === "text" &&
+      now - lastWrite < 120 &&
+      preview.length - lastLength < 24
+    )
+      return;
+    lastWrite = now;
+    lastLength = preview.length;
+    const streamedAt = Date.now();
+    projectsRepository.updateRunUsage(runId, {
+      streamChars: preview.length,
+      streamUpdatedAt: streamedAt,
+      streamEventCount: update.sequence || 0,
+      preview,
+      note: status,
+    });
+    projectsRepository.updateLiveRun(
+      projectId,
+      runId,
+      preview,
+      status,
+      update.sequence,
+    );
+  };
 }
 
 function heartbeat(
@@ -117,6 +174,8 @@ export async function planProject(
     currentRunId: run.id,
     agentNote: "THINKING",
     streamPreview: "",
+    streamUpdatedAt: Date.now(),
+    streamEventCount: 0,
     error: "",
   });
   projectsRepository.event(
@@ -127,6 +186,8 @@ export async function planProject(
 
   let usage: AgentUsage | null = null;
   let text = "";
+  let planningAssistantText = "";
+  const writePlanningLive = planningLiveWriter(project.id, run.id);
 
   try {
     await measure(
@@ -154,21 +215,21 @@ export async function planProject(
             projectId: project.id,
           },
           () =>
-            planGame(project.idea, (note) => {
-              projectsRepository.updateRunUsage(run.id, { note });
-              projectsRepository.updateLiveRun(project.id, run.id, "", note);
+            planGame(project.idea, (update) => {
+              if (update.kind === "text") planningAssistantText = update.text;
+              writePlanningLive(update);
             }),
         );
         usage = result.usage;
         const { plan } = result;
         const milestones = plan.milestones.map((item) => toMilestone(item));
 
-        text = planningPreview(
-          plan.note,
-          plan.slug,
-          plan.summary,
-          plan.milestones,
-        );
+        text = [
+          planningAssistantText ? `A|${planningAssistantText}` : "",
+          planningPreview(plan.note, plan.slug, plan.summary, plan.milestones),
+        ]
+          .filter(Boolean)
+          .join("\n");
         projectsRepository.updateRunUsage(run.id, {
           ...usagePatch(result.usage),
           streamChars: text.length,
@@ -213,7 +274,7 @@ export async function planProject(
     projectsRepository.event(
       project.id,
       "roadmap.planned",
-      "Initial three-milestone roadmap published.",
+      "Initial six-milestone roadmap published with a Canvas-to-Three.js rendering arc.",
     );
   } catch (error) {
     const message = errorMessage(error);
@@ -343,7 +404,6 @@ export async function buildNext(
             start: () => "Run build agent",
             end: (value: Awaited<ReturnType<typeof buildMilestone>>) => ({
               summary: value.summary,
-              next: value.nextMilestone.title,
               usage: value.usage,
             }),
             projectId: project.id,
@@ -358,8 +418,18 @@ export async function buildNext(
               (activity) => {
                 activityText = activity.text;
                 usage = activity.usage;
-                writeProgress(activity.text, activity.note, activity.usage);
-                if (activity.note && activity.note !== lastActivityEvent) {
+                writeProgress(
+                  activity.text,
+                  activity.note,
+                  activity.usage,
+                  false,
+                  activity.sequence,
+                );
+                if (
+                  activity.event !== false &&
+                  activity.note &&
+                  activity.note !== lastActivityEvent
+                ) {
                   lastActivityEvent = activity.note;
                   projectsRepository.event(
                     project.id,
@@ -405,10 +475,6 @@ export async function buildNext(
         );
         if (artifactIssues.length)
           throw new Error(`artifact rejected: ${artifactIssues.join("; ")}`);
-        if (!result.nextMilestone.title)
-          throw new Error("agent did not propose the next rolling milestone");
-
-        const nextMilestone = toMilestone(result.nextMilestone);
         await measure(
           {
             start: () => "Set publishing",
@@ -451,7 +517,7 @@ export async function buildNext(
                 runId: run.id,
                 createdAt: Date.now(),
               },
-              nextMilestone,
+              undefined,
               steering.map((item) => item.id),
             ),
         );
@@ -467,15 +533,6 @@ export async function buildNext(
       "artifact.published",
       `Published v${milestoneIndex + 1}: ${milestone.title}.`,
     );
-    const next = projectsRepository.get(project.id)?.milestones[
-      milestoneIndex + 1
-    ];
-    if (next)
-      projectsRepository.event(
-        project.id,
-        "roadmap.rolled",
-        `Added next milestone: ${next.title}.`,
-      );
   } catch (error) {
     const message = errorMessage(error);
     const quota = isQuotaError(message);

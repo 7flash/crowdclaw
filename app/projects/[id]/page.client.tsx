@@ -36,6 +36,9 @@ export default function mount({ params }: { params: Record<string, string> }) {
     artifactCodeVersion: null as number | null,
     previewRevision: initial.project.updatedAt,
     toast: null as string | null,
+    proposalTitle: "",
+    proposalGoal: "",
+    proposing: false,
     steerText: "",
     steerAmount: "1",
     steering: false,
@@ -54,6 +57,9 @@ export default function mount({ params }: { params: Record<string, string> }) {
         artifactCodeVersion={state.artifactCodeVersion}
         previewRevision={state.previewRevision}
         toast={state.toast}
+        proposalTitle={state.proposalTitle}
+        proposalGoal={state.proposalGoal}
+        proposing={state.proposing}
         steerText={state.steerText}
         steerAmount={state.steerAmount}
         steering={state.steering}
@@ -86,6 +92,27 @@ export default function mount({ params }: { params: Record<string, string> }) {
     const statusChanged = next.project.status !== previous.project.status;
     const balanceChanged =
       next.project.onchainLamports !== previous.project.onchainLamports;
+    const roadmapChanged =
+      next.project.done !== previous.project.done ||
+      JSON.stringify(next.project.milestones) !==
+        JSON.stringify(previous.project.milestones);
+    const buildStatuses = new Set([
+      "queued",
+      "working",
+      "validating",
+      "publishing",
+    ]);
+    const stayingInBuild =
+      buildStatuses.has(previous.project.status) &&
+      buildStatuses.has(next.project.status);
+    const viewingShippedArtifact =
+      state.selectedVersion !== -1 && next.artifacts.length > 0;
+    const streamOnlyWhilePlaying =
+      viewingShippedArtifact &&
+      stayingInBuild &&
+      !artifactAdded &&
+      !balanceChanged &&
+      !roadmapChanged;
 
     state.bundle = next;
     state.refreshing = false;
@@ -95,6 +122,14 @@ export default function mount({ params }: { params: Record<string, string> }) {
       state.artifactCode = null;
       state.artifactCodeVersion = null;
       if (state.tab === "code") void loadCurrentCode();
+    }
+    // Streaming a new milestone can update the project several times per second.
+    // Do not keep reconciling the shipped-game iframe while somebody is playing
+    // it; that can reset the browsing context in lightweight renderers. LIVE is
+    // still available explicitly for watching the workspace build.
+    if (streamOnlyWhilePlaying) {
+      updateRunClock();
+      return;
     }
     draw();
     updateRunClock();
@@ -186,7 +221,9 @@ export default function mount({ params }: { params: Record<string, string> }) {
 
   const currentVersion = () => {
     const latest = state.bundle.artifacts[state.bundle.artifacts.length - 1];
-    return state.selectedVersion ?? latest?.version ?? null;
+    return state.selectedVersion != null && state.selectedVersion > 0
+      ? state.selectedVersion
+      : (latest?.version ?? null);
   };
 
   const loadCurrentCode = async () => {
@@ -330,6 +367,21 @@ export default function mount({ params }: { params: Record<string, string> }) {
     root.querySelectorAll("[data-stage-clock]").forEach((node) => {
       (node as HTMLElement).textContent = text;
     });
+    root.querySelectorAll("[data-build-surface-clock]").forEach((node) => {
+      const element = node as HTMLElement;
+      const startedAt = Number(
+        element.dataset.runStartedAt || run?.startedAt || 0,
+      );
+      if (!startedAt) {
+        element.textContent = text || "";
+        return;
+      }
+      const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+      element.textContent =
+        elapsed < 60
+          ? `${elapsed}s`
+          : `${Math.floor(elapsed / 60)}m ${String(elapsed % 60).padStart(2, "0")}s`;
+    });
   };
   const runClockTimer = setInterval(updateRunClock, 1000);
 
@@ -369,6 +421,18 @@ export default function mount({ params }: { params: Record<string, string> }) {
         draw();
       }
     },
+    async startBuild() {
+      if (state.bundle.project.status !== "awaiting_start") return;
+      try {
+        await api.startProject(projectId);
+        await refresh(false);
+        toast("BUILD STARTED");
+      } catch (error) {
+        state.error = message(error);
+        draw();
+      }
+    },
+
     async devFund() {
       try {
         await api.devFund(projectId, 2);
@@ -377,6 +441,61 @@ export default function mount({ params }: { params: Record<string, string> }) {
       } catch (error) {
         state.error = message(error);
         draw();
+      }
+    },
+
+    async voteMilestone(milestoneKey) {
+      if (!milestoneKey) return;
+      try {
+        const result = await api.voteMilestone(
+          projectId,
+          milestoneKey,
+          voterKey(),
+        );
+        state.bundle = { ...state.bundle, project: result.project };
+        draw();
+        toast(result.accepted ? "UPVOTED" : "ALREADY VOTED");
+      } catch (error) {
+        toast(message(error).toUpperCase());
+      }
+    },
+
+    setProposalTitle(value) {
+      state.proposalTitle = value;
+      draw();
+    },
+    setProposalGoal(value) {
+      state.proposalGoal = value;
+      draw();
+    },
+    async proposeMilestone() {
+      if (state.proposing) return;
+      const title = state.proposalTitle.trim();
+      const goal = state.proposalGoal.trim();
+      if (title.length < 3 || goal.length < 8) return;
+      state.proposing = true;
+      draw();
+      try {
+        const result = await api.proposeMilestone(projectId, {
+          title,
+          goal,
+          voterKey: voterKey(),
+        });
+        state.bundle = { ...state.bundle, project: result.project };
+        state.proposing = false;
+        if (result.accepted) {
+          state.proposalTitle = "";
+          state.proposalGoal = "";
+          draw();
+          toast("MILESTONE ADDED");
+        } else {
+          draw();
+          toast(proposalReason(result.reason));
+        }
+      } catch (error) {
+        state.proposing = false;
+        draw();
+        toast(message(error).toUpperCase());
       }
     },
 
@@ -483,6 +602,29 @@ function parseBundle(raw: string | undefined): ProjectBundle | null {
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : "request failed";
+}
+
+function proposalReason(reason?: string): string {
+  if (reason === "duplicate") return "ALREADY ON ROADMAP";
+  if (reason === "proposal_limit") return "PROPOSAL LIMIT REACHED";
+  if (reason === "roadmap_full") return "ROADMAP FULL";
+  return "COULD NOT ADD MILESTONE";
+}
+
+function voterKey(): string {
+  const storageKey = "crowdclaw:voter";
+  try {
+    const existing = localStorage.getItem(storageKey);
+    if (existing) return existing;
+    const next =
+      typeof crypto?.randomUUID === "function"
+        ? crypto.randomUUID()
+        : `v_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+    localStorage.setItem(storageKey, next);
+    return next;
+  } catch {
+    return `v_${Date.now().toString(36)}_${Math.random().toString(36).slice(2)}`;
+  }
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

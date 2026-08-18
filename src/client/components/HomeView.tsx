@@ -6,11 +6,13 @@ import { BrandBar } from "./BrandBar";
 export type HomeViewProps = {
   projects: Project[];
   creating: boolean;
+  starting: boolean;
   planningProject: Project | null;
   draft: string;
   onDraft: (value: string) => void;
   lamportsPerCredit: number;
   onCreate: () => void;
+  onStart: () => void;
   error?: string | null;
 };
 
@@ -83,7 +85,9 @@ export function HomeView(props: HomeViewProps) {
               project={props.planningProject}
               idea={props.draft}
               creating={props.creating}
+              starting={props.starting}
               lamportsPerCredit={props.lamportsPerCredit}
+              onStart={props.onStart}
             />
           </section>
         )}
@@ -117,23 +121,32 @@ export function HomeView(props: HomeViewProps) {
 function Planning({
   project,
   idea,
+  starting,
+  onStart,
 }: {
   project: Project | null;
   idea: string;
   creating: boolean;
+  starting: boolean;
   lamportsPerCredit: number;
+  onStart: () => void;
 }) {
   const preview = parsePlan(project?.streamPreview || "");
   const prompt = (project?.idea || idea).trim();
   const name =
     preview.name ||
     (project && project.name !== "new-project" ? project.name : "");
-  const milestones = preview.milestones.length
-    ? preview.milestones
-    : project?.milestones || [];
   const ready = Boolean(
-    project && project.milestones.length === 3 && project.status !== "planning",
+    project &&
+    project.milestones.length >= 6 &&
+    project.status === "awaiting_start",
   );
+  const milestones =
+    ready && project
+      ? project.milestones
+      : preview.milestones.length
+        ? preview.milestones
+        : project?.milestones || [];
   const error =
     project?.status === "failed"
       ? publicErrorLabel(project.error || project.agentNote)
@@ -144,6 +157,8 @@ function Planning({
     project?.status === "planning"
       ? visibleRuntimeProgress(project.agentNote)
       : "";
+  const planningActivity = runtimeProgress;
+  const streamedAssistant = preview.assistant;
 
   return (
     <div className="cc-project-transition cc-plan-shell text-left">
@@ -175,9 +190,22 @@ function Planning({
               className="font-data text-[9px] text-[var(--dimmer)]"
             />
           </div>
-          {runtimeProgress ? (
-            <div className="cc-fade mt-3 truncate pl-[30px] font-data text-[9px] text-[var(--dimmer)]">
-              {runtimeProgress}
+          {planningActivity ? (
+            <div className="cc-fade mt-3 flex items-center gap-2 pl-[30px] font-data text-[9px] text-[var(--dimmer)]">
+              <span
+                className="h-1 w-1 shrink-0 rounded-full bg-[var(--mint)]"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 truncate">{planningActivity}</span>
+            </div>
+          ) : null}
+          {streamedAssistant ? (
+            <div className="cc-fade mt-4 max-w-[620px] pl-[30px] text-[12px] leading-5 text-[var(--dim)]">
+              {streamedAssistant}
+              <span
+                className="ml-1 inline-block h-[1em] w-px translate-y-[2px] bg-[var(--mint)] opacity-70"
+                aria-hidden="true"
+              />
             </div>
           ) : null}
         </div>
@@ -191,7 +219,7 @@ function Planning({
 
       {milestones.length ? (
         <div className="mt-7 grid gap-[6px]">
-          {milestones.slice(0, 3).map((milestone, index) => (
+          {milestones.slice(0, 6).map((milestone, index) => (
             <div
               key={`${milestone.title}-${index}`}
               className="cc-milestone cc-fade"
@@ -199,7 +227,16 @@ function Planning({
               <span className="font-data text-[10px] text-[var(--dimmer)]">
                 {index + 1}
               </span>
-              <span className="text-sm leading-[1.35]">{milestone.title}</span>
+              <span className="min-w-0">
+                <span className="block text-sm leading-[1.35]">
+                  {milestone.title}
+                </span>
+                {"goal" in milestone && milestone.goal ? (
+                  <span className="mt-1 block text-[11px] leading-5 text-[var(--dimmer)]">
+                    {milestone.goal}
+                  </span>
+                ) : null}
+              </span>
               <span aria-hidden="true" />
             </div>
           ))}
@@ -207,21 +244,22 @@ function Planning({
       ) : null}
 
       {ready && project ? (
-        <a
-          id="crowdclaw-created-project-link"
-          className="pointer-events-none absolute h-px w-px overflow-hidden opacity-0"
-          href={`/projects/${encodeURIComponent(project.id)}`}
-          aria-hidden="true"
-          tabIndex={-1}
-        >
-          OPEN
-        </a>
+        <div className="cc-fade mt-8 flex justify-end border-t border-[var(--line)] pt-5">
+          <button
+            className="cc-btn cc-btn-primary min-w-[150px]"
+            disabled={starting}
+            onClick={onStart}
+          >
+            {starting ? "…" : "START BUILD →"}
+          </button>
+        </div>
       ) : null}
     </div>
   );
 }
 
 function parsePlan(text: string): {
+  assistant: string;
   thought: string;
   name: string;
   summary: string;
@@ -231,6 +269,12 @@ function parsePlan(text: string): {
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const assistant = lines
+    .filter((line) => line.startsWith("A|"))
+    .map((line) => line.slice(2).trim())
+    .filter(Boolean)
+    .join(" ")
+    .slice(0, 420);
   const thought =
     lines
       .find((line) => line.startsWith("T|"))
@@ -256,14 +300,22 @@ function parsePlan(text: string): {
       };
     })
     .filter((item) => item.title);
-  return { thought, name, summary, milestones };
+  return { assistant, thought, name, summary, milestones };
 }
 
 function visibleRuntimeProgress(value: string): string {
   const message = value.replace(/\s+/g, " ").trim();
   if (!message) return "";
+  if (/^(?:THINKING|PLAN|NAME|LOOP|DONE|READY|BUILDING)$/i.test(message))
+    return "";
   if (
-    /^(?:THINKING|PLAN|NAME|LOOP|DONE|READY|BUILDING|MODEL RUNNING)$/i.test(
+    /configured service tier .*not advertised as supported|service tier .*will be omitted/i.test(
+      message,
+    )
+  )
+    return "";
+  if (
+    /^(?:Codex (?:turn|command) started|Model step started|Model response received)$/i.test(
       message,
     )
   )
@@ -272,6 +324,7 @@ function visibleRuntimeProgress(value: string): string {
 }
 
 function shortStatus(status: Project["status"]): string {
+  if (status === "awaiting_start") return "START";
   if (status === "seeding") return "STARTING";
   if (status === "waiting_funds") return "PAUSED";
   if (

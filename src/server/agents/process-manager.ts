@@ -7,6 +7,7 @@ import { publicErrorLabel } from "../../shared/public-error";
 
 const PREFIX = "crowdclaw-agent-";
 const ID = /^p_[a-z0-9]+_[a-z0-9]+$/i;
+type ProjectAgentPhase = "plan" | "build";
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 let reconciling = false;
 
@@ -22,7 +23,19 @@ function isTransientProviderError(message: string): boolean {
   );
 }
 
-export function projectAgentName(projectId: string): string {
+export function projectAgentName(
+  projectId: string,
+  phase: ProjectAgentPhase = "build",
+): string {
+  if (!ID.test(projectId)) throw new Error("invalid project id");
+  return `${PREFIX}${projectId}-${phase}`;
+}
+
+function phaseForStatus(status: string): ProjectAgentPhase {
+  return status === "planning" ? "plan" : "build";
+}
+
+function legacyProjectAgentName(projectId: string): string {
   if (!ID.test(projectId)) throw new Error("invalid project id");
   return `${PREFIX}${projectId}`;
 }
@@ -30,11 +43,24 @@ export function projectAgentName(projectId: string): string {
 export async function projectAgentStatus(
   projectId: string,
 ): Promise<ProjectAgentProcess | null> {
-  const name = projectAgentName(projectId);
-  const proc = getProcess(name);
+  const project = projectsRepository.get(projectId);
+  const name = projectAgentName(
+    projectId,
+    phaseForStatus(project?.status || "build"),
+  );
+  let proc = getProcess(name);
+  let resolvedName = name;
+  if (!proc) {
+    const legacyName = legacyProjectAgentName(projectId);
+    const legacy = getProcess(legacyName);
+    if (legacy) {
+      proc = legacy;
+      resolvedName = legacyName;
+    }
+  }
   if (!proc) return null;
   return {
-    name,
+    name: resolvedName,
     pid: Number(proc.pid || 0),
     running:
       Number(proc.pid || 0) > 0 ? await isProcessRunning(proc.pid) : false,
@@ -90,7 +116,19 @@ function compactLaunchError(error: unknown): {
 export async function ensureProjectAgent(
   projectId: string,
 ): Promise<ProjectAgentProcess> {
-  const name = projectAgentName(projectId);
+  const project = projectsRepository.get(projectId);
+  if (!project) throw new Error("project not found");
+  const phase = phaseForStatus(project.status);
+  const name = projectAgentName(projectId, phase);
+
+  // Planning and building use different bgrun process names. The planning worker
+  // exits after publishing an awaiting_start roadmap. Reusing that just-stopped
+  // bgrun name for the build can race bgrun's stale-PID reconciliation on
+  // Windows and trigger unrelated orphan-port cleanup. A fresh build name makes
+  // START BUILD a clean process launch instead of a restart of the planner.
+  if (["awaiting_start", "completed", "failed"].includes(project.status)) {
+    return { name, pid: 0, running: false };
+  }
 
   // Fail with a useful message in the web process instead of letting a detached
   // child disappear instantly when the installed jsx-ai package is older than
@@ -110,11 +148,29 @@ export async function ensureProjectAgent(
     return { name, pid: Number(existing.pid), running: true };
   }
 
+  // During a rolling upgrade, an older unsuffixed worker may still be alive.
+  // Reuse it rather than starting a second worker for the same project. Dead
+  // legacy records are deliberately ignored so START BUILD never restarts them.
+  const legacyName = legacyProjectAgentName(projectId);
+  const legacy = getProcess(legacyName);
+  if (
+    legacy &&
+    Number(legacy.pid || 0) > 0 &&
+    (await isProcessRunning(legacy.pid))
+  ) {
+    return { name: legacyName, pid: Number(legacy.pid), running: true };
+  }
+
   // Let bgrun resolve Bun exactly as its CLI does. `directory` supplies the
   // project cwd, so the entrypoint can stay relative and the command contains
   // no path quoting. This is important on Windows where bgrun launches command
   // strings through cmd.exe and pre-quoted executable paths are interpreted
   // incorrectly.
+  // No registered worker is alive. Clear any lease/run left by the dead worker
+  // immediately instead of making the replacement process stare at a stale
+  // 60-second lease before it can retry the milestone.
+  projectsRepository.recoverProjectWork(projectId, true);
+
   const command = `bun project-agent.ts ${projectId}`;
   const launched = await measure(
     {
@@ -288,7 +344,10 @@ export async function reconcileProjectAgents(): Promise<void> {
 
     const active = projectsRepository
       .list()
-      .filter((project) => !["completed", "failed"].includes(project.status));
+      .filter(
+        (project) =>
+          !["awaiting_start", "completed", "failed"].includes(project.status),
+      );
     for (const project of active) {
       try {
         await ensureProjectAgent(project.id);
@@ -316,10 +375,16 @@ export async function bgrunHealth(): Promise<{
     // simple health probe take seconds if we interrogate all of them.
     const active = projectsRepository
       .list()
-      .filter((project) => !["completed", "failed"].includes(project.status));
+      .filter(
+        (project) =>
+          !["awaiting_start", "completed", "failed"].includes(project.status),
+      );
     let running = 0;
     for (const project of active) {
-      const proc = getProcess(projectAgentName(project.id));
+      const proc =
+        getProcess(
+          projectAgentName(project.id, phaseForStatus(project.status)),
+        ) || getProcess(legacyProjectAgentName(project.id));
       if (
         proc &&
         Number(proc.pid || 0) > 0 &&

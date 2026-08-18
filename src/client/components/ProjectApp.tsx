@@ -10,6 +10,11 @@ export type ProjectActions = {
   syncFunding: () => void;
   devFund: () => void;
   share: () => void;
+  startBuild: () => void;
+  voteMilestone: (milestoneKey: string) => void;
+  setProposalTitle: (value: string) => void;
+  setProposalGoal: (value: string) => void;
+  proposeMilestone: () => void;
   setSteerText: (value: string) => void;
   setSteerAmount: (value: string) => void;
   steer: () => void;
@@ -26,6 +31,9 @@ export function ProjectApp(props: {
   artifactCodeVersion: number | null;
   previewRevision: number;
   toast: string | null;
+  proposalTitle?: string;
+  proposalGoal?: string;
+  proposing?: boolean;
   steerText: string;
   steerAmount: string;
   steering: boolean;
@@ -53,6 +61,14 @@ export function ProjectApp(props: {
         onSyncFunding={props.actions.syncFunding}
         onDevFund={props.actions.devFund}
         onShare={props.actions.share}
+        onStartBuild={props.actions.startBuild}
+        onVoteMilestone={props.actions.voteMilestone}
+        proposalTitle={props.proposalTitle ?? ""}
+        proposalGoal={props.proposalGoal ?? ""}
+        proposing={Boolean(props.proposing)}
+        onProposalTitle={props.actions.setProposalTitle}
+        onProposalGoal={props.actions.setProposalGoal}
+        onProposeMilestone={props.actions.proposeMilestone}
         onSteerText={props.actions.setSteerText}
         onSteerAmount={props.actions.setSteerAmount}
         onSteer={props.actions.steer}

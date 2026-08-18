@@ -35,6 +35,19 @@ export async function createProject(
   return body.project;
 }
 
+export async function startProject(
+  id: string,
+  signal?: AbortSignal,
+): Promise<Project> {
+  const body = await readJson<{ project: Project }>(
+    await fetch(`/api/projects/${encodeURIComponent(id)}/start`, {
+      method: "POST",
+      signal,
+    }),
+  );
+  return body.project;
+}
+
 export async function getProject(
   id: string,
   signal?: AbortSignal,
@@ -122,5 +135,43 @@ export async function submitSteering(
       headers: { "content-type": "application/json" },
       body: JSON.stringify(input),
     }),
+  );
+}
+
+export async function voteMilestone(
+  projectId: string,
+  milestoneKey: string,
+  voterKey: string,
+): Promise<{ project: Project; accepted: boolean }> {
+  return readJson(
+    await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/milestones/vote`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ milestoneKey, voterKey }),
+      },
+    ),
+  );
+}
+
+export async function proposeMilestone(
+  projectId: string,
+  input: { title: string; goal: string; voterKey: string },
+): Promise<{
+  project: Project;
+  accepted: boolean;
+  milestoneKey?: string;
+  reason?: string;
+}> {
+  return readJson(
+    await fetch(
+      `/api/projects/${encodeURIComponent(projectId)}/milestones/propose`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(input),
+      },
+    ),
   );
 }

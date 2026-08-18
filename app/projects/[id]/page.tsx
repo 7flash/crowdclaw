@@ -13,6 +13,11 @@ const actions: ProjectActions = {
   syncFunding: noop,
   devFund: noop,
   share: noop,
+  startBuild: noop,
+  voteMilestone: noop,
+  setProposalTitle: noop,
+  setProposalGoal: noop,
+  proposeMilestone: noop,
   setSteerText: noop,
   setSteerAmount: noop,
   steer: noop,
@@ -57,6 +62,9 @@ export default function ProjectPage({
         artifactCodeVersion={null}
         previewRevision={bundle.project.updatedAt}
         toast={null}
+        proposalTitle=""
+        proposalGoal=""
+        proposing={false}
         steerText=""
         steerAmount="1"
         steering={false}

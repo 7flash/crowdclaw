@@ -1,13 +1,29 @@
-import type { Milestone } from "../../shared/types";
+import type {
+  Milestone,
+  MilestoneOrigin,
+  MilestoneRendering,
+} from "../../shared/types";
 
 export function toMilestone(
-  input: { title: string; goal?: string; costCredits: number },
+  input: {
+    title: string;
+    goal?: string;
+    costCredits: number;
+    rendering?: MilestoneRendering;
+    origin?: MilestoneOrigin;
+    proposedBy?: string;
+  },
   createdAt = Date.now(),
 ): Milestone {
   return {
+    key: `m_${createdAt.toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
     title: input.title,
     goal: input.goal || "",
     costCredits: input.costCredits,
+    votes: 0,
+    rendering: input.rendering || "canvas",
+    origin: input.origin || "agent",
+    ...(input.proposedBy ? { proposedBy: input.proposedBy } : {}),
     state: "queued",
     createdAt,
   };

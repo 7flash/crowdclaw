@@ -2,7 +2,7 @@ import { projectsRepository } from "../../../../../src/server/db/project-reposit
 import { log } from "../../../../../src/server/log";
 
 const encoder = new TextEncoder();
-const SNAPSHOT_INTERVAL_MS = 500;
+const SNAPSHOT_INTERVAL_MS = 200;
 const KEEPALIVE_MS = 15_000;
 
 export async function GET(

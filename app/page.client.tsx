@@ -10,10 +10,10 @@ export default function mount() {
 
   let planningSource: EventSource | null = null;
   let fallbackPoll: ReturnType<typeof setInterval> | null = null;
-  let openTimer: ReturnType<typeof setTimeout> | null = null;
   let state = {
     projects: parseProjects(root.dataset.projects),
     creating: false,
+    starting: false,
     planningProject: null as Project | null,
     draft: "",
     error: null as string | null,
@@ -22,21 +22,21 @@ export default function mount() {
 
   const draw = () =>
     render(
-      <>
-        <HomeView
-          projects={state.projects}
-          creating={state.creating}
-          planningProject={state.planningProject}
-          draft={state.draft}
-          onDraft={(draft) => {
-            state.draft = draft;
-            draw();
-          }}
-          lamportsPerCredit={state.lamportsPerCredit}
-          onCreate={() => void create()}
-          error={state.error}
-        />
-      </>,
+      <HomeView
+        projects={state.projects}
+        creating={state.creating}
+        starting={state.starting}
+        planningProject={state.planningProject}
+        draft={state.draft}
+        onDraft={(draft) => {
+          state.draft = draft;
+          draw();
+        }}
+        lamportsPerCredit={state.lamportsPerCredit}
+        onCreate={() => void create()}
+        onStart={() => void startBuild()}
+        error={state.error}
+      />,
       root,
     );
 
@@ -55,72 +55,12 @@ export default function mount() {
       (node as HTMLElement).textContent = text;
     });
   };
-  const planningClockTimer = setInterval(updatePlanningClock, 1000);
+  setInterval(updatePlanningClock, 1000);
 
   const stopPlanningStream = () => {
     planningSource?.close();
     planningSource = null;
     stopFallback();
-  };
-
-  const scheduleOpen = () => {
-    if (openTimer) return;
-    openTimer = setTimeout(() => {
-      const link = document.getElementById(
-        "crowdclaw-created-project-link",
-      ) as HTMLAnchorElement | null;
-      if (!link) {
-        openTimer = null;
-        return;
-      }
-
-      // Make the document handoff deterministic with WAAPI instead of relying
-      // on cross-document transition support or remount-sensitive CSS classes.
-      root.classList.add("cc-home-handoff-out");
-      const shell = root.querySelector(".cc-plan-shell");
-      shell?.animate(
-        [
-          {
-            opacity: 1,
-            transform: "translateY(0) scale(1)",
-            filter: "blur(0)",
-          },
-          {
-            opacity: 0,
-            transform: "translateY(-28px) scale(.975)",
-            filter: "blur(6px)",
-          },
-        ],
-        { duration: 700, easing: "cubic-bezier(.4,0,.2,1)", fill: "forwards" },
-      );
-      const curtain = document.createElement("div");
-      curtain.className = "cc-handoff-curtain";
-      curtain.innerHTML = '<i class="cc-handoff-line"></i>';
-      document.body.appendChild(curtain);
-      curtain.animate([{ opacity: 0 }, { opacity: 1 }], {
-        duration: 520,
-        easing: "ease-out",
-        fill: "forwards",
-      });
-      curtain
-        .querySelector("i")
-        ?.animate([{ transform: "scaleX(.02)" }, { transform: "scaleX(1)" }], {
-          duration: 650,
-          easing: "cubic-bezier(.16,.84,.28,1)",
-          fill: "forwards",
-        });
-      try {
-        sessionStorage.setItem(
-          `crowdclaw:handoff:${state.planningProject?.id || ""}`,
-          "1",
-        );
-      } catch {}
-
-      openTimer = setTimeout(() => {
-        openTimer = null;
-        window.location.assign(link.href);
-      }, 700);
-    }, 1200);
   };
 
   const applyPlanningBundle = (bundle: ProjectBundle) => {
@@ -133,16 +73,14 @@ export default function mount() {
     state.error = null;
     draw();
     updatePlanningClock();
-    if (bundle.project.status === "failed") {
-      stopPlanningStream();
-      return;
-    }
+
+    // The roadmap is the end of planning, not the beginning of building. Leave
+    // the finished roadmap on this page until the creator explicitly confirms it.
     if (
-      bundle.project.milestones.length === 3 &&
-      bundle.project.status !== "planning"
+      bundle.project.status === "failed" ||
+      bundle.project.status === "awaiting_start"
     ) {
       stopPlanningStream();
-      scheduleOpen();
     }
   };
 
@@ -187,6 +125,7 @@ export default function mount() {
     const idea = state.draft.trim();
     if (idea.length < 10 || state.creating) return;
     state.creating = true;
+    state.starting = false;
     state.error = null;
     draw();
     try {
@@ -207,11 +146,27 @@ export default function mount() {
     }
   };
 
+  const startBuild = async () => {
+    const project = state.planningProject;
+    if (!project || project.status !== "awaiting_start" || state.starting)
+      return;
+    state.starting = true;
+    state.error = null;
+    draw();
+    try {
+      await api.startProject(project.id);
+      window.location.assign(`/projects/${encodeURIComponent(project.id)}`);
+    } catch (error) {
+      state.starting = false;
+      state.error = message(error);
+      draw();
+    }
+  };
+
   const reset = async () => {
     stopPlanningStream();
-    if (openTimer) clearTimeout(openTimer);
-    openTimer = null;
     state.creating = false;
+    state.starting = false;
     state.planningProject = null;
     state.error = null;
     try {

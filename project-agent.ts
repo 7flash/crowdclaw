@@ -24,6 +24,13 @@ if (!/^p_[a-z0-9]+_[a-z0-9]+$/i.test(projectId))
 
 const owner = `${hostname()}:${process.pid}:${projectId}`;
 let stopping = false;
+let jsxAiVersion = "unknown";
+try {
+  const pkg = (await Bun.file(
+    new URL("./node_modules/jsx-ai/package.json", import.meta.url),
+  ).json()) as { version?: string };
+  jsxAiVersion = String(pkg.version || "unknown");
+} catch {}
 
 process.once("SIGTERM", () => {
   stopping = true;
@@ -124,7 +131,8 @@ async function seedFirstMilestone(
 async function tick(): Promise<boolean> {
   let snapshot = projectsRepository.get(projectId);
   if (!snapshot) return false;
-  if (["completed", "failed"].includes(snapshot.status)) return false;
+  if (["awaiting_start", "completed", "failed"].includes(snapshot.status))
+    return false;
 
   projectsRepository.recoverProjectWork(projectId);
   snapshot = projectsRepository.get(projectId);
@@ -306,11 +314,13 @@ async function tick(): Promise<boolean> {
 }
 
 log("info", "agent.process.ready", {
+  version: "4.32.0",
+  jsxAiVersion,
   projectId,
   pid: process.pid,
   owner,
   runtime: jsxAiRuntime() || "provider",
-  model: modelName(),
+  model: jsxAiRuntime() === "codex" ? "codex-config" : modelName(),
 });
 
 while (!stopping) {
@@ -331,7 +341,11 @@ while (!stopping) {
   );
 
   const latest = projectsRepository.get(projectId);
-  if (!latest || ["completed", "failed"].includes(latest.status)) break;
+  if (
+    !latest ||
+    ["awaiting_start", "completed", "failed"].includes(latest.status)
+  )
+    break;
   await Bun.sleep(worked ? 100 : agentPollMs());
 }
 

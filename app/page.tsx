@@ -15,11 +15,13 @@ export default function Page() {
       <HomeView
         projects={projects}
         creating={false}
+        starting={false}
         planningProject={null}
         draft=""
         onDraft={noop}
         lamportsPerCredit={lamportsPerCredit()}
         onCreate={noop}
+        onStart={noop}
       />
     </div>
   );

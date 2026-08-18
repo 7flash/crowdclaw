@@ -1,63 +1,43 @@
 {
-  "name": "jsx-ai",
-  "version": "0.14.0",
-  "description": "Composable JSX for structured LLM calls, tools, and agent loops across provider APIs and Codex",
+  "name": "crowdclaw",
+  "version": "4.32.1",
+  "private": true,
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
-  "exports": {
-    ".": "./src/index.ts",
-    "./jsx-runtime": "./src/jsx-runtime.ts",
-    "./jsx-dev-runtime": "./src/jsx-dev-runtime.ts"
-  },
   "scripts": {
+    "dev": "bun --watch server.ts",
+    "start": "bun server.ts",
+    "agent": "bun project-agent.ts",
+    "bgrun": "bunx bgrun --dashboard",
+    "check": "tsc --noEmit",
     "test": "bun test",
-    "typecheck": "tsc --noEmit",
-    "bench": "bun run bench/strategies.tsx",
-    "example:game": "bun run examples/game-builder-agent.tsx",
-    "check": "tsc --noEmit && bun test",
-    "example:coding": "bun run examples/coding-agent.tsx",
-    "example:skills": "bun run examples/skills-agent.tsx",
-    "example:codex": "bun run examples/runtime-agent.tsx",
-    "example:runtime": "bun run examples/runtime-agent.tsx",
-    "example:streaming": "bun run examples/streaming-agent.tsx",
-    "example:text-stream": "bun run examples/text-stream.ts"
+    "smoke": "bun scripts/smoke.ts",
+    "verify": "bun run check && bun test && bun run smoke",
+    "refresh:jsx-ai": "bun update jsx-ai @openai/codex-sdk"
   },
-  "files": [
-    "src",
-    "README.md"
-  ],
-  "keywords": [
-    "jsx",
-    "ai",
-    "llm",
-    "tools",
-    "function-calling",
-    "agents",
-    "gemini",
-    "openai",
-    "anthropic",
-    "codex"
-  ],
-  "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/7flash/jsx-ai"
+  "dependencies": {
+    "@openai/codex-sdk": "latest",
+    "@solard/sdk": "0.2.3",
+    "bgrun": "3.14.0",
+    "jsx-ai": "latest",
+    "measure-fn": "4.0.5",
+    "sqlite-zod-orm": "3.33.0",
+    "tailwindcss": "4.1.10",
+    "tradjs": "4.3.0",
+    "zod": "3.25.67",
+    "three": "latest"
   },
-  "author": "7flash",
   "devDependencies": {
-    "@types/bun": "^1.3.9",
-    "typescript": "^5.8.3",
-    "@types/node": "^22.0.0",
-    "measure-fn": "^3.11.2",
-    "@openai/codex-sdk": "^0.145.0"
+    "@types/bun": "latest",
+    "typescript": "^5.9.2"
   },
-  "peerDependencies": {
-    "@openai/codex-sdk": ">=0.145.0 <1"
-  },
-  "peerDependenciesMeta": {
-    "@openai/codex-sdk": {
-      "optional": true
-    }
+  "tradjs": {
+    "serverOnly": [
+      "@openai/codex-sdk",
+      "@solard/sdk",
+      "bgrun",
+      "jsx-ai",
+      "sqlite-zod-orm",
+      "measure-fn"
+    ]
   }
 }
