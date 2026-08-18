@@ -80,6 +80,16 @@ export default function mount({ params }: { params: Record<string, string> }) {
     }, 1600);
   };
 
+  const updatePassiveBuildProgress = (preview: string) => {
+    const compact = compactBuildSource(preview);
+    root.querySelectorAll("[data-active-milestone-source]").forEach((node) => {
+      (node as HTMLElement).textContent = compact;
+    });
+    root.querySelectorAll("[data-active-milestone-pulse]").forEach((node) => {
+      (node as HTMLElement).style.display = compact ? "none" : "";
+    });
+  };
+
   const applyBundle = (next: ProjectBundle) => {
     const previous = state.bundle;
     const previousArtifactCount = previous.artifacts.length;
@@ -89,6 +99,7 @@ export default function mount({ params }: { params: Record<string, string> }) {
       previewChanged &&
       /(?:^|\n)WRITE game\.tsx(?:\n|$)/.test(next.project.streamPreview);
     const artifactAdded = next.artifacts.length > previousArtifactCount;
+    const liveMilestoneShipped = artifactAdded && state.selectedVersion === -1;
     const statusChanged = next.project.status !== previous.project.status;
     const balanceChanged =
       next.project.onchainLamports !== previous.project.onchainLamports;
@@ -118,6 +129,15 @@ export default function mount({ params }: { params: Record<string, string> }) {
     state.refreshing = false;
     state.error = null;
     if (wroteIndex || artifactAdded) state.previewRevision = Date.now();
+    // LIVE is scoped to the milestone the user clicked. Once that milestone
+    // ships, immediately return to the newly published playable version instead
+    // of carrying LIVE into the next autonomous milestone.
+    if (liveMilestoneShipped) {
+      state.selectedVersion = null;
+      state.tab = "play";
+      state.artifactCode = null;
+      state.artifactCodeVersion = null;
+    }
     if (state.selectedVersion == null && artifactAdded) {
       state.artifactCode = null;
       state.artifactCodeVersion = null;
@@ -128,6 +148,10 @@ export default function mount({ params }: { params: Record<string, string> }) {
     // it; that can reset the browsing context in lightweight renderers. LIVE is
     // still available explicitly for watching the workspace build.
     if (streamOnlyWhilePlaying) {
+      // Keep the shipped iframe completely untouched while still advancing the
+      // tiny roadmap counter. A full TradJS render here can recreate/reset the
+      // iframe, which is exactly what play-while-building is meant to avoid.
+      updatePassiveBuildProgress(next.project.streamPreview);
       updateRunClock();
       return;
     }
@@ -598,6 +622,28 @@ function parseBundle(raw: string | undefined): ProjectBundle | null {
   } catch {
     return null;
   }
+}
+
+function compactBuildSource(preview: string): string {
+  let source = "";
+  for (const raw of preview.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (/^G\|/i.test(line)) source = line.slice(2).trim();
+  }
+  if (!source) return "";
+  const lines = source.match(/([\d,]+)\s+lines?/i)?.[1]?.replace(/,/g, "");
+  const chars = source.match(/([\d,]+)\s+chars?/i)?.[1]?.replace(/,/g, "");
+  const lineCount = lines ? Number(lines) : 0;
+  const charCount = chars ? Number(chars) : 0;
+  const charLabel =
+    charCount >= 1000
+      ? `${(charCount / 1000).toFixed(charCount >= 10000 ? 0 : 1)}K`
+      : charCount > 0
+        ? String(charCount)
+        : "";
+  if (lineCount > 0 && charLabel) return `${lineCount}L · ${charLabel}`;
+  if (lineCount > 0) return `${lineCount}L`;
+  return charLabel;
 }
 
 function message(error: unknown): string {

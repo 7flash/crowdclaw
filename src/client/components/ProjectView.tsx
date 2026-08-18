@@ -46,7 +46,6 @@ export function ProjectView(props: ProjectViewProps) {
     treasuryGrants,
     usage,
     lamportsPerCredit,
-    events,
   } = props.bundle;
   const latestArtifact = artifacts[artifacts.length - 1];
   // `null` means follow the latest shipped artifact. `-1` is the explicit
@@ -84,12 +83,6 @@ export function ProjectView(props: ProjectViewProps) {
     (run) => run.status === "running" && run.kind === "build",
   );
   const totalTokens = usage.totalTokens;
-  const activityItems = buildActivityItems(
-    events,
-    project.streamPreview,
-    project.agentNote,
-    runningBuild?.startedAt || 0,
-  );
   const liveBuildPreview = parseBuildPreview(project.streamPreview);
   const workspaceWritten =
     /(?:^|\n)(?:WRITE game\.tsx|Writing game\.tsx)(?:\n|$)/i.test(
@@ -113,12 +106,7 @@ export function ProjectView(props: ProjectViewProps) {
     project.availableCredits,
     lamportsPerCredit,
   );
-  const stageActivity = stageActivityLabel(
-    project.status,
-    project.agentNote,
-    project.error,
-    retrying,
-  );
+  const showLiveWorkspace = liveSelected && buildActive;
   const stageHeight = awaitingStart
     ? "96px"
     : buildActive && (showLiveWorkspace || !currentArtifact)
@@ -129,7 +117,6 @@ export function ProjectView(props: ProjectViewProps) {
   const openSteering = steering
     .filter((item) => item.status === "open")
     .sort((a, b) => b.influence - a.influence);
-  const showLiveWorkspace = liveSelected && buildActive;
   const playUrl =
     showLiveWorkspace || !currentArtifact
       ? `/api/projects/${encodeURIComponent(project.id)}/preview?rev=${encodeURIComponent(String(props.previewRevision))}`
@@ -189,16 +176,6 @@ export function ProjectView(props: ProjectViewProps) {
           <div className="flex items-center gap-0.5">
             {artifacts.length ? (
               <div className="cc-version-strip">
-                {buildActive ? (
-                  <button
-                    className={`cc-version-chip ${showLiveWorkspace ? "cc-version-on" : ""}`}
-                    onClick={() => props.onVersion(-1)}
-                    aria-label="Show live workspace"
-                    title="Live workspace"
-                  >
-                    LIVE
-                  </button>
-                ) : null}
                 {artifacts.slice(-5).map((item) => (
                   <button
                     key={item.version}
@@ -257,15 +234,6 @@ export function ProjectView(props: ProjectViewProps) {
             ) : null}
           </div>
         </div>
-        {buildActive &&
-        !waitingForFirstSource &&
-        !waitingForAgentStart &&
-        (showLiveWorkspace || !currentArtifact) ? (
-          <div className="flex min-h-[30px] items-center gap-2 border-b border-[var(--line)] bg-[#071014] px-3 font-data text-[9px] text-[var(--dimmer)]">
-            <span className="cc-spinner shrink-0" aria-hidden="true" />
-            <span className="min-w-0 truncate">{stageActivity}</span>
-          </div>
-        ) : null}
         {project.status === "failed" ? (
           <div className="cc-activity-ribbon">
             <span className="cc-activity-current">
@@ -284,19 +252,11 @@ export function ProjectView(props: ProjectViewProps) {
               </button>
             </div>
           ) : showLiveWorkspace && buildActive ? (
-            <BuildWaitingSurface
-              activity={activityItems}
-              assistant={liveBuildPreview.assistant}
-              source={liveBuildPreview.source}
-            />
+            <BuildWaitingSurface source={liveBuildPreview.source} />
           ) : waitingForFirstSource ? (
-            <BuildWaitingSurface
-              activity={activityItems}
-              assistant={liveBuildPreview.assistant}
-              source={liveBuildPreview.source}
-            />
+            <BuildWaitingSurface source={liveBuildPreview.source} />
           ) : waitingForAgentStart ? (
-            <QueueWaitingSurface label={stageActivity} retrying={retrying} />
+            <QueueWaitingSurface retrying={retrying} />
           ) : props.tab === "code" && currentArtifact && !showLiveWorkspace ? (
             <pre className="cc-code">
               {props.artifactCodeVersion === currentArtifact.version &&
@@ -333,9 +293,12 @@ export function ProjectView(props: ProjectViewProps) {
       <Roadmap
         shipped={shipped}
         upcoming={upcoming}
+        runs={runs}
         done={project.done}
         total={project.milestones.length}
         active={buildActive}
+        liveSelected={liveSelected}
+        liveSource={liveBuildPreview.source}
         currentVersion={currentArtifact?.version}
         onVersion={props.onVersion}
         onVoteMilestone={props.onVoteMilestone}
@@ -385,7 +348,7 @@ function LiveStrip(props: {
   return (
     <section className="border-b border-[var(--line)] py-4">
       <div className="grid grid-cols-2 gap-x-5 gap-y-4 min-[720px]:grid-cols-4">
-        <StatBlock label="TOKENS" value={integer(props.totalTokens)} subtle />
+        <StatBlock label="TOKENS" value={integer(props.totalTokens)} />
         <StatBlock
           label="EST. USD"
           value={`$${formatUsd(props.usdEstimate)}`}
@@ -582,9 +545,12 @@ function Community(props: {
 function Roadmap(props: {
   shipped: ProjectBundle["project"]["milestones"];
   upcoming: ProjectBundle["project"]["milestones"];
+  runs: ProjectBundle["runs"];
   done: number;
   total: number;
   active: boolean;
+  liveSelected: boolean;
+  liveSource: string;
   currentVersion?: number;
   onVersion: (version: number | null) => void;
   onVoteMilestone: (milestoneKey: string) => void;
@@ -617,6 +583,13 @@ function Roadmap(props: {
         {props.shipped.slice(-3).map((mile, shippedIndex) => {
           const index = Math.max(0, props.shipped.length - 3) + shippedIndex;
           const version = mile.artifactVersion || index + 1;
+          const run = props.runs.find(
+            (item) =>
+              item.kind === "build" &&
+              item.status === "complete" &&
+              item.milestoneIndex === index,
+          );
+          const tokenLabel = run ? compactTokens(runTokens(run)) : "";
           return (
             <button
               key={`${mile.title}-${index}`}
@@ -629,15 +602,25 @@ function Roadmap(props: {
               <span className="truncate text-sm leading-[1.35] text-[var(--dim)]">
                 {mile.title}
               </span>
-              <span className="font-data text-[10px] text-[var(--dimmer)]">
+              <span
+                className="font-data whitespace-nowrap text-[9px] text-[var(--dimmer)]"
+                title={
+                  tokenLabel
+                    ? `Version ${version} · ${integer(runTokens(run!))} tokens`
+                    : `Version ${version}`
+                }
+              >
                 V{version}
+                {tokenLabel ? ` · ${tokenLabel} TOK` : ""}
               </span>
             </button>
           );
         })}
 
         {props.upcoming.map((mile, offset) => {
-          const rowClass = `grid w-full grid-cols-[26px_minmax(0,1fr)_auto] items-start gap-3 rounded-[6px] border px-4 py-3 text-left ${offset === 0 ? "border-[rgba(255,92,43,.38)] bg-[rgba(255,92,43,.045)]" : "border-[var(--line)] bg-white/[.012]"}`;
+          const currentLive = offset === 0 && props.active;
+          const currentSelected = currentLive && props.liveSelected;
+          const rowClass = `grid w-full grid-cols-[26px_minmax(0,1fr)_auto] items-start gap-3 rounded-[6px] border px-4 py-3 text-left ${offset === 0 ? (currentSelected ? "border-[rgba(83,224,193,.46)] bg-[rgba(83,224,193,.045)]" : "border-[rgba(255,92,43,.38)] bg-[rgba(255,92,43,.045)]") : "border-[var(--line)] bg-white/[.012]"}`;
           const row = (
             <>
               <span className="pt-0.5 font-data text-[10px] text-[var(--dimmer)]">
@@ -674,6 +657,28 @@ function Roadmap(props: {
                 >
                   ▲ {Math.max(0, Number(mile.votes || 0))}
                 </button>
+              ) : currentLive ? (
+                <span
+                  className="mt-0.5 flex min-w-[54px] items-center justify-end gap-2 font-data text-[9px] text-[var(--dimmer)]"
+                  data-active-milestone-live
+                >
+                  <span data-active-milestone-source>
+                    {compactLiveSource(props.liveSource)}
+                  </span>
+                  <span
+                    data-active-milestone-pulse
+                    className="relative flex h-2 w-2 items-center justify-center"
+                    style={{
+                      display: compactLiveSource(props.liveSource)
+                        ? "none"
+                        : undefined,
+                    }}
+                    aria-hidden="true"
+                  >
+                    <span className="absolute h-full w-full animate-ping rounded-full bg-[var(--mint)] opacity-20" />
+                    <span className="relative h-1.5 w-1.5 rounded-full bg-[var(--mint)]" />
+                  </span>
+                </span>
               ) : (
                 <span aria-hidden="true" />
               )}
@@ -684,8 +689,12 @@ function Roadmap(props: {
             <button
               key={mile.key || `${mile.title}-${props.done + offset}`}
               className={`${rowClass} cursor-pointer`}
-              onClick={() => props.onVersion(-1)}
-              aria-label={`Show build progress for ${mile.title}`}
+              onClick={() => props.onVersion(props.liveSelected ? null : -1)}
+              aria-label={
+                props.liveSelected
+                  ? `Return to latest playable version from ${mile.title}`
+                  : `Show build progress for ${mile.title}`
+              }
             >
               {row}
             </button>
@@ -746,9 +755,7 @@ function Roadmap(props: {
   );
 }
 
-type BuildActivityItem = { text: string; createdAt: number };
-
-function QueueWaitingSurface(props: { label: string; retrying: boolean }) {
+function QueueWaitingSurface(props: { retrying: boolean }) {
   return (
     <div className="relative flex h-full overflow-hidden bg-[#050a0c]">
       <div
@@ -760,24 +767,21 @@ function QueueWaitingSurface(props: { label: string; retrying: boolean }) {
         }}
       />
       <div className="relative z-10 m-auto w-full max-w-[620px] px-6 py-7">
-        {props.label ? (
-          <div className="flex items-center gap-3 border-y border-[var(--line)] py-3 font-data text-[10px] text-[var(--bone)]">
+        <div className="mb-3 flex justify-center">
+          <span
+            className="relative flex h-2.5 w-2.5 items-center justify-center"
+            aria-hidden="true"
+          >
             <span
-              className="relative flex h-2.5 w-2.5 items-center justify-center"
-              aria-hidden="true"
-            >
-              <span
-                className={`absolute h-full w-full animate-ping rounded-full ${props.retrying ? "bg-[var(--claw)]" : "bg-[var(--mint)]"} opacity-20`}
-              />
-              <span
-                className={`relative h-1.5 w-1.5 rounded-full ${props.retrying ? "bg-[var(--claw)]" : "bg-[var(--mint)]"}`}
-              />
-            </span>
-            <span>{props.label}</span>
-          </div>
-        ) : null}
+              className={`absolute h-full w-full animate-ping rounded-full ${props.retrying ? "bg-[var(--claw)]" : "bg-[var(--mint)]"} opacity-20`}
+            />
+            <span
+              className={`relative h-1.5 w-1.5 rounded-full ${props.retrying ? "bg-[var(--claw)]" : "bg-[var(--mint)]"}`}
+            />
+          </span>
+        </div>
         <svg
-          className={`${props.label ? "mt-3" : ""} block h-[2px] w-full overflow-hidden bg-[var(--line)]`}
+          className="block h-[2px] w-full overflow-hidden bg-[var(--line)]"
           viewBox="0 0 100 2"
           preserveAspectRatio="none"
           aria-hidden="true"
@@ -796,15 +800,7 @@ function QueueWaitingSurface(props: { label: string; retrying: boolean }) {
   );
 }
 
-function BuildWaitingSurface(props: {
-  activity: BuildActivityItem[];
-  assistant: string;
-  source: string;
-}) {
-  const source = props.source;
-  const latest = [...props.activity]
-    .reverse()
-    .find((item) => item.text !== source && item.text !== props.assistant);
+function BuildWaitingSurface(props: { source: string }) {
   return (
     <div className="relative flex h-full overflow-hidden bg-[#050a0c]">
       <div
@@ -817,17 +813,7 @@ function BuildWaitingSurface(props: {
       />
 
       <div className="relative z-10 m-auto w-full max-w-[720px] px-6 py-7">
-        {props.assistant ? (
-          <div className="mb-3 truncate font-data text-[9px] text-[var(--dimmer)]">
-            {props.assistant}
-          </div>
-        ) : latest ? (
-          <div className="mb-3 truncate font-data text-[9px] text-[var(--dimmer)]">
-            {latest.text}
-          </div>
-        ) : null}
-
-        {source ? (
+        {props.source ? (
           <div className="flex items-center gap-3 border-y border-[var(--line)] py-3">
             <span
               className="relative flex h-2.5 w-2.5 shrink-0 items-center justify-center"
@@ -837,13 +823,23 @@ function BuildWaitingSurface(props: {
               <span className="relative h-1.5 w-1.5 rounded-full bg-[var(--mint)]" />
             </span>
             <span className="min-w-0 font-data text-[10px] leading-5 text-[var(--bone)]">
-              {source}
+              {props.source}
             </span>
           </div>
-        ) : null}
+        ) : (
+          <div className="mb-3 flex justify-center">
+            <span
+              className="relative flex h-2.5 w-2.5 items-center justify-center"
+              aria-hidden="true"
+            >
+              <span className="absolute h-full w-full animate-ping rounded-full bg-[var(--mint)] opacity-20" />
+              <span className="relative h-1.5 w-1.5 rounded-full bg-[var(--mint)]" />
+            </span>
+          </div>
+        )}
 
         <svg
-          className={`${source ? "mt-3" : ""} block h-[2px] w-full overflow-hidden bg-[var(--line)]`}
+          className={`${props.source ? "mt-3" : ""} block h-[2px] w-full overflow-hidden bg-[var(--line)]`}
           viewBox="0 0 100 2"
           preserveAspectRatio="none"
           aria-hidden="true"
@@ -862,88 +858,48 @@ function BuildWaitingSurface(props: {
   );
 }
 
-function parseBuildPreview(preview: string): {
-  assistant: string;
-  source: string;
-} {
-  let assistant = "";
+function parseBuildPreview(preview: string): { source: string } {
   let source = "";
   for (const raw of preview.split(/\r?\n/)) {
     const line = raw.trim();
-    if (/^A\|/i.test(line)) assistant = line.slice(2).trim().slice(0, 360);
     if (/^G\|/i.test(line)) source = line.slice(2).trim().slice(0, 180);
   }
-  return { assistant, source };
+  return { source };
 }
 
-function buildActivityItems(
-  events: ProjectBundle["events"],
-  preview: string,
-  note: string,
-  runStartedAt: number,
-): BuildActivityItem[] {
-  const eventItems = events
-    .filter(
-      (event) =>
-        event.type === "agent.activity" &&
-        (!runStartedAt || event.createdAt >= runStartedAt - 1000),
-    )
-    .slice(0, 8)
-    .reverse()
-    .map((event) => ({
-      text: cleanBuildActivity(event.message),
-      createdAt: event.createdAt,
-    }))
-    .filter((item) => Boolean(item.text));
-
-  const previewItems = preview
-    .split(/\r?\n/)
-    .map((line) => cleanBuildActivity(line.replace(/^>\s*/, "")))
-    .filter(Boolean)
-    .map((line) => ({ text: line, createdAt: 0 }));
-
-  const cleanNote = cleanBuildActivity(note);
-  if (cleanNote) previewItems.push({ text: cleanNote, createdAt: 0 });
-
-  return dedupeActivityItems([...eventItems, ...previewItems]).slice(-5);
+function compactLiveSource(source: string): string {
+  if (!source) return "";
+  const lines = source.match(/([\d,]+)\s+lines?/i)?.[1]?.replace(/,/g, "");
+  const chars = source.match(/([\d,]+)\s+chars?/i)?.[1]?.replace(/,/g, "");
+  const lineCount = lines ? Number(lines) : 0;
+  const charCount = chars ? Number(chars) : 0;
+  const charLabel =
+    charCount >= 1000
+      ? `${(charCount / 1000).toFixed(charCount >= 10000 ? 0 : 1)}K`
+      : charCount > 0
+        ? String(charCount)
+        : "";
+  if (lineCount > 0 && charLabel) return `${lineCount}L · ${charLabel}`;
+  if (lineCount > 0) return `${lineCount}L`;
+  return charLabel;
 }
 
-function cleanBuildActivity(value: string): string {
-  const line = value.replace(/\s+/g, " ").trim();
-  if (!line) return "";
-  if (
-    /^(?:BUILDING|READY|DONE|STARTING|VALIDATE|PUBLISH|SHIPPING|V\d+|BUSY|TIMEOUT|RETRY)$/i.test(
-      line,
-    )
-  )
-    return "";
-  if (
-    /^(?:Codex generating build|Model running|Codex (?:turn|command) started|Model step started|Model response received)$/i.test(
-      line,
-    )
-  )
-    return "";
-  if (
-    /configured service tier .*not advertised as supported|service tier .*will be omitted/i.test(
-      line,
-    )
-  )
-    return "";
-  if (/^A\|/i.test(line)) return line.slice(2).trim().slice(0, 360);
-  if (/^G\|/i.test(line)) return line.slice(2).trim().slice(0, 180);
-  if (/^WRITE game\.tsx$/i.test(line)) return "Writing game.tsx";
-  if (/^COMMIT game\.tsx$/i.test(line)) return "Committing game.tsx";
-  if (/^DONE$/i.test(line)) return "Build response complete";
-  return line.slice(0, 180);
+function runTokens(run: ProjectBundle["runs"][number]): number {
+  return Math.max(
+    0,
+    Number(run.inputTokens || 0) +
+      Number(run.outputTokens || 0) +
+      Number(run.thinkingTokens || 0),
+  );
 }
 
-function dedupeActivityItems(items: BuildActivityItem[]): BuildActivityItem[] {
-  const out: BuildActivityItem[] = [];
-  for (const item of items) {
-    if (!item.text || out[out.length - 1]?.text === item.text) continue;
-    out.push(item);
-  }
-  return out;
+function compactTokens(value: number): string {
+  const tokens = Math.max(0, Math.floor(value));
+  if (tokens >= 1_000_000)
+    return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
+  if (tokens >= 1000)
+    return `${(tokens / 1000).toFixed(tokens >= 10_000 ? 0 : 1)}K`;
+  return String(tokens);
 }
 
 function integer(value: number): string {
@@ -959,35 +915,6 @@ function formatUsd(value: number): string {
 
 function creditsToSol(credits: number, lamportsPerCredit: number): number {
   return (credits * lamportsPerCredit) / SOL_LAMPORTS;
-}
-
-function stageActivityLabel(
-  _status: ProjectStatus,
-  note: string,
-  _error: string,
-  _retrying: boolean,
-): string {
-  const clean = note.replace(/\s+/g, " ").trim();
-  if (!clean) return "";
-  if (
-    /configured service tier .*not advertised as supported|service tier .*will be omitted/i.test(
-      clean,
-    )
-  )
-    return "";
-  if (
-    /^(?:Codex (?:turn|command) started|Model step started|Model response received)$/i.test(
-      clean,
-    )
-  )
-    return "";
-  if (
-    /^(?:BUILDING|READY|DONE|STARTING|VALIDATE|PUBLISH|SHIPPING|V\d+|BUSY|TIMEOUT|RETRY)$/i.test(
-      clean,
-    )
-  )
-    return "";
-  return clean.slice(0, 160);
 }
 
 function statusLabel(
