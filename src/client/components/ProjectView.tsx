@@ -123,7 +123,7 @@ export function ProjectView(props: ProjectViewProps) {
     ? "96px"
     : !currentArtifact && buildActive
       ? "clamp(190px, 23vw, 260px)"
-      : "clamp(360px, 48vw, 560px)";
+      : "clamp(500px, 64vw, 720px)";
   const seed = treasuryGrants[0];
   const visibleSeed = seed && seed.status !== "failed" ? seed : undefined;
   const openSteering = steering
