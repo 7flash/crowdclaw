@@ -121,7 +121,7 @@ export function ProjectView(props: ProjectViewProps) {
   );
   const stageHeight = awaitingStart
     ? "96px"
-    : !currentArtifact && buildActive
+    : buildActive && (showLiveWorkspace || !currentArtifact)
       ? "clamp(190px, 23vw, 260px)"
       : "clamp(500px, 64vw, 720px)";
   const seed = treasuryGrants[0];
@@ -283,6 +283,12 @@ export function ProjectView(props: ProjectViewProps) {
                 START BUILD →
               </button>
             </div>
+          ) : showLiveWorkspace && buildActive ? (
+            <BuildWaitingSurface
+              activity={activityItems}
+              assistant={liveBuildPreview.assistant}
+              source={liveBuildPreview.source}
+            />
           ) : waitingForFirstSource ? (
             <BuildWaitingSurface
               activity={activityItems}
@@ -630,50 +636,68 @@ function Roadmap(props: {
           );
         })}
 
-        {props.upcoming.map((mile, offset) => (
-          <div
-            key={mile.key || `${mile.title}-${props.done + offset}`}
-            className={`grid grid-cols-[26px_minmax(0,1fr)_auto] items-start gap-3 rounded-[6px] border px-4 py-3 ${offset === 0 ? "border-[rgba(255,92,43,.38)] bg-[rgba(255,92,43,.045)]" : "border-[var(--line)] bg-white/[.012]"}`}
-          >
-            <span className="pt-0.5 font-data text-[10px] text-[var(--dimmer)]">
-              {props.done + offset + 1}
-            </span>
-            <span className="min-w-0">
-              <span className="flex min-w-0 items-center gap-2">
-                <span
-                  className={`min-w-0 truncate text-[13px] leading-5 ${offset === 0 ? "text-[var(--bone)]" : "text-[var(--dim)]"}`}
-                >
-                  {mile.title}
-                </span>
-                {mile.rendering === "three_migration" ? (
-                  <span className="shrink-0 font-data text-[8px] uppercase tracking-[.12em] text-[var(--mint)]">
-                    3D
+        {props.upcoming.map((mile, offset) => {
+          const rowClass = `grid w-full grid-cols-[26px_minmax(0,1fr)_auto] items-start gap-3 rounded-[6px] border px-4 py-3 text-left ${offset === 0 ? "border-[rgba(255,92,43,.38)] bg-[rgba(255,92,43,.045)]" : "border-[var(--line)] bg-white/[.012]"}`;
+          const row = (
+            <>
+              <span className="pt-0.5 font-data text-[10px] text-[var(--dimmer)]">
+                {props.done + offset + 1}
+              </span>
+              <span className="min-w-0">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span
+                    className={`min-w-0 truncate text-[13px] leading-5 ${offset === 0 ? "text-[var(--bone)]" : "text-[var(--dim)]"}`}
+                  >
+                    {mile.title}
                   </span>
-                ) : mile.origin === "community" ? (
-                  <span className="shrink-0 font-data text-[8px] uppercase tracking-[.1em] text-[var(--dimmer)]">
-                    COMMUNITY
+                  {mile.rendering === "three_migration" ? (
+                    <span className="shrink-0 font-data text-[8px] uppercase tracking-[.12em] text-[var(--mint)]">
+                      3D
+                    </span>
+                  ) : mile.origin === "community" ? (
+                    <span className="shrink-0 font-data text-[8px] uppercase tracking-[.1em] text-[var(--dimmer)]">
+                      COMMUNITY
+                    </span>
+                  ) : null}
+                </span>
+                {mile.goal ? (
+                  <span className="mt-1 block text-[10px] leading-4 text-[var(--dimmer)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
+                    {mile.goal}
                   </span>
                 ) : null}
               </span>
-              {mile.goal ? (
-                <span className="mt-1 block text-[10px] leading-4 text-[var(--dimmer)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:2] overflow-hidden">
-                  {mile.goal}
-                </span>
-              ) : null}
-            </span>
-            {offset > 0 ? (
-              <button
-                className="cc-mini min-w-[54px] whitespace-nowrap"
-                onClick={() => props.onVoteMilestone(mile.key)}
-                aria-label={`Upvote ${mile.title}`}
-              >
-                ▲ {Math.max(0, Number(mile.votes || 0))}
-              </button>
-            ) : (
-              <span aria-hidden="true" />
-            )}
-          </div>
-        ))}
+              {offset > 0 ? (
+                <button
+                  className="cc-mini min-w-[54px] whitespace-nowrap"
+                  onClick={() => props.onVoteMilestone(mile.key)}
+                  aria-label={`Upvote ${mile.title}`}
+                >
+                  ▲ {Math.max(0, Number(mile.votes || 0))}
+                </button>
+              ) : (
+                <span aria-hidden="true" />
+              )}
+            </>
+          );
+
+          return offset === 0 && props.active ? (
+            <button
+              key={mile.key || `${mile.title}-${props.done + offset}`}
+              className={`${rowClass} cursor-pointer`}
+              onClick={() => props.onVersion(-1)}
+              aria-label={`Show build progress for ${mile.title}`}
+            >
+              {row}
+            </button>
+          ) : (
+            <div
+              key={mile.key || `${mile.title}-${props.done + offset}`}
+              className={rowClass}
+            >
+              {row}
+            </div>
+          );
+        })}
       </div>
 
       <details className="mt-3 rounded-[6px] border border-[var(--line)] bg-white/[.01] px-4 py-3">
