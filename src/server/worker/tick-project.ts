@@ -48,7 +48,7 @@ function publishBuildNotification(
 }
 
 function isDatabaseBusy(error: unknown): boolean {
-  return /(?:database is locked|database table is locked|SQLITE_BUSY|CrowdClaw database writer lock timed out|CrowdClaw database write remained busy)/i.test(
+  return /(?:database is locked|database table is locked|SQLITE_BUSY)/i.test(
     errorMessage(error),
   );
 }

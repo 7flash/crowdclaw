@@ -139,7 +139,7 @@ async function tick(): Promise<boolean> {
   if (!snapshot) return false;
 
   // Planning/build retry backoff may pause model work. Funding is different:
-  // while waiting for SOL we still reconcile the project wallet every agent poll
+  // while waiting for Robinhood ETH we still reconcile the project wallet every agent poll
   // so a real inbound transfer can wake the project immediately.
   if (
     snapshot.status !== "waiting_funds" &&
@@ -180,7 +180,7 @@ async function tick(): Promise<boolean> {
   if (snapshot.status === "waiting_funds") {
     let funded = await measure(
       {
-        start: () => "Watch project SOL",
+        start: () => "Watch project ETH",
         end: projectSummary,
         projectId,
       },
@@ -314,14 +314,16 @@ async function tick(): Promise<boolean> {
 }
 
 log("info", "agent.process.ready", {
-  version: "4.39.0",
+  version: "4.47.0",
   jsxAiVersion,
   projectId,
   pid: process.pid,
   owner,
   runtime: jsxAiRuntime() || "provider",
   model: jsxAiRuntime() === "codex" ? "codex-config" : modelName(),
-  codexSqliteHome: process.env.CODEX_SQLITE_HOME || "shared",
+  codexHome: process.env.CODEX_HOME || "default",
+  codexSqliteHome: process.env.CODEX_SQLITE_HOME || "default",
+  generation: process.env.CROWDCLAW_AGENT_GENERATION || "legacy",
 });
 
 while (!stopping) {

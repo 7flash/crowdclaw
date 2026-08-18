@@ -5,20 +5,106 @@ import {
   getProcess,
   isProcessRunning,
   readFileTail,
-  terminateProcess,
 } from "bgrun";
 import { measure } from "measure-fn";
 import { projectsRepository } from "../db/project-repository";
 import { errorMessage, log } from "../log";
-import { publishNotification } from "../notification-feed";
 import { publicErrorLabel } from "../../shared/public-error";
+import { verifyAgentProcessIdentity } from "./process-identity";
+import {
+  adminPausedProjectIds,
+  isProjectAdminPaused,
+  setProjectAdminPaused,
+} from "./admin-pause-store";
 
 const PREFIX = "crowdclaw-agent-";
 const ID = /^p_[a-z0-9]+_[a-z0-9]+$/i;
 type ProjectAgentPhase = "plan" | "build";
 const PROJECT_ROOT = resolve(import.meta.dir, "../../..");
 let reconciling = false;
-const adminStopped = new Set<string>();
+const startingAgents = new Map<string, Promise<ProjectAgentProcess>>();
+
+async function terminateAgentPid(
+  pid: number,
+  meta: { projectId: string; name: string; reason: string },
+): Promise<void> {
+  if (!Number.isFinite(pid) || pid <= 0) return;
+  if (!(await isProcessRunning(pid))) return;
+
+  const phase = parsedModernAgentName(meta.name)?.phase || "build";
+  const currentGeneration = new RegExp(
+    `^${PREFIX}${meta.projectId}-${phase}-[a-z0-9]+-[a-z0-9]+$`,
+    "i",
+  ).test(meta.name);
+  const identity = await verifyAgentProcessIdentity({
+    pid,
+    name: meta.name,
+    projectId: meta.projectId,
+    currentGeneration,
+  });
+  if (!identity.verified) {
+    log("error", "agent.process.identity_refused", {
+      pid,
+      ...meta,
+      identityReason: identity.reason,
+      commandLine: identity.commandLine.slice(0, 320),
+    });
+    throw new Error(
+      `refusing to signal unverified PID ${pid}: ${identity.reason}`,
+    );
+  }
+
+  // Do not use bgrun's terminate/restart path here. A stale bgrun record may
+  // carry old port metadata, and bgrun is allowed to reconcile/clean those
+  // ports while terminating a managed record. CrowdClaw agents own no ports;
+  // admin/supervisor stop therefore targets the child OS PID only. bgrun still
+  // owns registration, launch, status and logs.
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    const message = errorMessage(error);
+    if (!/ESRCH|no such process/i.test(message)) throw error;
+    return;
+  }
+
+  for (let attempt = 0; attempt < 30; attempt += 1) {
+    if (!(await isProcessRunning(pid))) {
+      log("info", "agent.process.pid_stopped", { pid, ...meta });
+      return;
+    }
+    await Bun.sleep(50);
+  }
+
+  // A stuck agent should not make RESTART hang forever. Escalate only that PID;
+  // never invoke bgrun group/port cleanup.
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    const message = errorMessage(error);
+    if (!/ESRCH|no such process/i.test(message)) throw error;
+  }
+  log("warn", "agent.process.pid_killed", { pid, ...meta });
+}
+
+function publishProcessNotification(
+  type: string,
+  projectId: string,
+  payload: Record<string, unknown>,
+): void {
+  // Notifications are optional observability. Never make agent lifecycle or the
+  // admin page depend on the notification module being present/loadable.
+  void import("../notification-feed")
+    .then(({ publishNotification }) =>
+      publishNotification(type, projectId, payload),
+    )
+    .catch((error) =>
+      log("warn", "notification.module_unavailable", {
+        type,
+        projectId,
+        error: errorMessage(error),
+      }),
+    );
+}
 
 export type ProjectAgentProcess = {
   name: string;
@@ -40,6 +126,109 @@ export function projectAgentName(
   return `${PREFIX}${projectId}-${phase}`;
 }
 
+function freshProjectAgentName(
+  projectId: string,
+  phase: ProjectAgentPhase,
+): string {
+  return `${projectAgentName(projectId, phase)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function parsedModernAgentName(
+  name: string,
+): { projectId: string; phase: ProjectAgentPhase } | null {
+  const match = name.match(
+    /^crowdclaw-agent-(p_[a-z0-9]+_[a-z0-9]+)-(plan|build)(?:-[a-z0-9]+-[a-z0-9]+)?$/i,
+  );
+  if (!match) return null;
+  return {
+    projectId: match[1],
+    phase: match[2].toLowerCase() as ProjectAgentPhase,
+  };
+}
+
+function projectAgentRecords(
+  projectId: string,
+  phase?: ProjectAgentPhase,
+): any[] {
+  return getAllProcesses()
+    .filter((proc: any) => {
+      const parsed = parsedModernAgentName(String(proc?.name || ""));
+      return (
+        parsed?.projectId === projectId && (!phase || parsed.phase === phase)
+      );
+    })
+    .sort(
+      (a: any, b: any) =>
+        Number(b?.timestamp || b?.created_at || 0) -
+        Number(a?.timestamp || a?.created_at || 0),
+    );
+}
+
+function isCurrentGenerationRecord(
+  proc: any,
+  projectId: string,
+  phase: ProjectAgentPhase,
+): boolean {
+  const name = String(proc?.name || "");
+  const parsed = parsedModernAgentName(name);
+  if (parsed?.projectId !== projectId || parsed.phase !== phase) return false;
+  // Current generations always have the random generation suffix and launch
+  // through project-agent-launch.ts. Stable/legacy names are old loaded code and
+  // must not survive a rolling CrowdClaw upgrade indefinitely.
+  if (
+    !new RegExp(
+      `^${PREFIX}${projectId}-${phase}-[a-z0-9]+-[a-z0-9]+$`,
+      "i",
+    ).test(name)
+  )
+    return false;
+  return /(?:^|[\\/\s])project-agent-launch\.ts(?:\s|$)/i.test(
+    String(proc?.command || ""),
+  );
+}
+
+async function runningProjectAgent(
+  projectId: string,
+  phase: ProjectAgentPhase,
+): Promise<any | null> {
+  for (const proc of projectAgentRecords(projectId, phase)) {
+    if (!isCurrentGenerationRecord(proc, projectId, phase)) continue;
+    const pid = Number(proc?.pid || 0);
+    if (pid > 0 && (await isProcessRunning(pid))) return proc;
+  }
+  return null;
+}
+
+async function stopStaleProjectAgents(projectId: string): Promise<number> {
+  let stopped = 0;
+  for (const proc of getAllProcesses() as any[]) {
+    const name = String(proc?.name || "");
+    const modern = parsedModernAgentName(name);
+    const legacy = name.match(/^crowdclaw-agent-(p_[a-z0-9]+_[a-z0-9]+)$/i);
+    const procProjectId = modern?.projectId || legacy?.[1] || "";
+    if (procProjectId !== projectId) continue;
+
+    if (modern && isCurrentGenerationRecord(proc, projectId, modern.phase))
+      continue;
+
+    const pid = Number(proc?.pid || 0);
+    if (pid <= 0 || !(await isProcessRunning(pid))) continue;
+    await terminateAgentPid(pid, {
+      projectId,
+      name,
+      reason: "stale-generation",
+    });
+    stopped += 1;
+    log("info", "agent.process.stale_stopped", {
+      projectId,
+      name,
+      pid,
+      command: String(proc?.command || ""),
+    });
+  }
+  return stopped;
+}
+
 function phaseForStatus(status: string): ProjectAgentPhase {
   return status === "planning" ? "plan" : "build";
 }
@@ -53,27 +242,31 @@ export async function projectAgentStatus(
   projectId: string,
 ): Promise<ProjectAgentProcess | null> {
   const project = projectsRepository.get(projectId);
-  const name = projectAgentName(
-    projectId,
-    phaseForStatus(project?.status || "build"),
-  );
-  let proc = getProcess(name);
-  let resolvedName = name;
-  if (!proc) {
-    const legacyName = legacyProjectAgentName(projectId);
-    const legacy = getProcess(legacyName);
-    if (legacy) {
-      proc = legacy;
-      resolvedName = legacyName;
-    }
+  const phase = phaseForStatus(project?.status || "build");
+  const live = await runningProjectAgent(projectId, phase);
+  if (live) {
+    return {
+      name: String(live.name || projectAgentName(projectId, phase)),
+      pid: Number(live.pid || 0),
+      running: true,
+    };
   }
-  if (!proc) return null;
-  return {
-    name: resolvedName,
-    pid: Number(proc.pid || 0),
-    running:
-      Number(proc.pid || 0) > 0 ? await isProcessRunning(proc.pid) : false,
-  };
+
+  const legacyName = legacyProjectAgentName(projectId);
+  const legacy = getProcess(legacyName);
+  if (legacy) {
+    const pid = Number(legacy.pid || 0);
+    return {
+      name: legacyName,
+      pid,
+      running: pid > 0 ? await isProcessRunning(pid) : false,
+    };
+  }
+
+  const latest = projectAgentRecords(projectId, phase)[0];
+  if (!latest) return null;
+  const pid = Number(latest.pid || 0);
+  return { name: String(latest.name), pid, running: false };
 }
 
 async function startupFailure(name: string): Promise<Error> {
@@ -122,15 +315,16 @@ function compactLaunchError(error: unknown): {
   };
 }
 
-export async function ensureProjectAgent(
+async function ensureProjectAgentInner(
   projectId: string,
 ): Promise<ProjectAgentProcess> {
   const project = projectsRepository.get(projectId);
   if (!project) throw new Error("project not found");
   const phase = phaseForStatus(project.status);
-  const name = projectAgentName(projectId, phase);
+  const stableName = projectAgentName(projectId, phase);
 
-  if (adminStopped.has(name)) return { name, pid: 0, running: false };
+  if (isProjectAdminPaused(projectId))
+    return { name: stableName, pid: 0, running: false };
 
   // Planning and building use different bgrun process names. The planning worker
   // exits after publishing an awaiting_start roadmap. Reusing that just-stopped
@@ -138,7 +332,7 @@ export async function ensureProjectAgent(
   // Windows and trigger unrelated orphan-port cleanup. A fresh build name makes
   // START BUILD a clean process launch instead of a restart of the planner.
   if (["awaiting_start", "completed", "failed"].includes(project.status)) {
-    return { name, pid: 0, running: false };
+    return { name: stableName, pid: 0, running: false };
   }
 
   // Fail with a useful message in the web process instead of letting a detached
@@ -150,27 +344,20 @@ export async function ensureProjectAgent(
       "jsx-ai runAgent export is missing; install a jsx-ai release that includes runAgent",
     );
   }
-  const existing = getProcess(name);
-  if (
-    existing &&
-    Number(existing.pid || 0) > 0 &&
-    (await isProcessRunning(existing.pid))
-  ) {
-    return { name, pid: Number(existing.pid), running: true };
+  const existing = await runningProjectAgent(projectId, phase);
+  if (existing) {
+    return {
+      name: String(existing.name || stableName),
+      pid: Number(existing.pid || 0),
+      running: true,
+    };
   }
 
-  // During a rolling upgrade, an older unsuffixed worker may still be alive.
-  // Reuse it rather than starting a second worker for the same project. Dead
-  // legacy records are deliberately ignored so START BUILD never restarts them.
-  const legacyName = legacyProjectAgentName(projectId);
-  const legacy = getProcess(legacyName);
-  if (
-    legacy &&
-    Number(legacy.pid || 0) > 0 &&
-    (await isProcessRunning(legacy.pid))
-  ) {
-    return { name: legacyName, pid: Number(legacy.pid), running: true };
-  }
+  // Do not keep executing code loaded by an older CrowdClaw release. Before
+  // creating the replacement generation, terminate live stable/legacy records
+  // for this project. This is direct OS-PID termination: it does not invoke bgrun's
+  // terminate/restart/port-cleanup path.
+  await stopStaleProjectAgents(projectId);
 
   // Let bgrun resolve Bun exactly as its CLI does. `directory` supplies the
   // project cwd, so the entrypoint can stay relative and the command contains
@@ -182,7 +369,11 @@ export async function ensureProjectAgent(
   // 60-second lease before it can retry the milestone.
   projectsRepository.recoverProjectWork(projectId, true);
 
-  const command = `bun project-agent-launch.ts ${projectId} ${phase}`;
+  // Never start a replacement through a stopped bgrun record. bgrun may reconcile
+  // stale PID/port metadata before launch; a fresh generation name makes this a
+  // pure new registration while staying entirely on the bgrun SDK.
+  const name = freshProjectAgentName(projectId, phase);
+  const command = `bun project-agent-launch.ts ${projectId} ${phase} ${name}`;
   const launched = await measure(
     {
       start: () => "Start bgrun agent",
@@ -207,12 +398,9 @@ export async function ensureProjectAgent(
           name,
           command,
           directory: PROJECT_ROOT,
-          // Project agents never listen on a TCP port. `force` is intentionally
-          // disabled: bgrun force-restart performs orphan-port cleanup from the
-          // previous process record. A stale worker record can otherwise carry
-          // the web server port and kill TradJS while merely restarting an
-          // agent. We already return above when the existing PID is alive, so a
-          // stopped record can be started safely without destructive cleanup.
+          // Project agents never listen on a TCP port. This is a brand-new
+          // generation name and `force` stays false, so bgrun has no previous
+          // record whose stale port metadata it could reconcile/clean up.
           force: false,
           remoteName: "",
         });
@@ -283,7 +471,7 @@ export async function ensureProjectAgent(
         name,
         pid: started.pid,
       });
-      publishNotification("agent.started", projectId, {
+      publishProcessNotification("agent.started", projectId, {
         projectName: project.name,
         name,
         pid: Number(started.pid),
@@ -295,6 +483,23 @@ export async function ensureProjectAgent(
   }
 
   throw await startupFailure(name);
+}
+
+export async function ensureProjectAgent(
+  projectId: string,
+): Promise<ProjectAgentProcess> {
+  const project = projectsRepository.get(projectId);
+  if (!project) throw new Error("project not found");
+  const key = `${projectId}:${phaseForStatus(project.status)}`;
+  const pending = startingAgents.get(key);
+  if (pending) return pending;
+  const task = ensureProjectAgentInner(projectId);
+  startingAgents.set(key, task);
+  try {
+    return await task;
+  } finally {
+    if (startingAgents.get(key) === task) startingAgents.delete(key);
+  }
 }
 
 export function startProjectAgent(projectId: string): void {
@@ -359,15 +564,15 @@ export async function reconcileProjectAgents(): Promise<void> {
       projectsRepository.event(project.id, "agent.recovered", "PLAN RETRY");
     }
 
+    const paused = adminPausedProjectIds();
     const active = projectsRepository
       .list()
       .filter(
         (project) =>
+          !paused.has(project.id) &&
           !["awaiting_start", "completed", "failed"].includes(project.status),
       );
     for (const project of active) {
-      const name = projectAgentName(project.id, phaseForStatus(project.status));
-      if (adminStopped.has(name)) continue;
       try {
         await ensureProjectAgent(project.id);
       } catch (error) {
@@ -385,28 +590,30 @@ export async function reconcileProjectAgents(): Promise<void> {
 export type AdminAgentProcess = {
   name: string;
   projectId: string;
+  projectName: string;
+  projectStatus: string;
   phase: ProjectAgentPhase | "legacy";
   pid: number;
   running: boolean;
+  verified: boolean;
   stoppedByAdmin: boolean;
+  canStop: boolean;
+  canRestart: boolean;
+  historical: boolean;
   command: string;
   directory: string;
   startedAt: number;
 };
 
 function projectIdFromAgentName(name: string): string {
-  const modern = name.match(
-    /^crowdclaw-agent-(p_[a-z0-9]+_[a-z0-9]+)-(?:plan|build)$/i,
-  );
-  if (modern) return modern[1];
+  const modern = parsedModernAgentName(name);
+  if (modern) return modern.projectId;
   const legacy = name.match(/^crowdclaw-agent-(p_[a-z0-9]+_[a-z0-9]+)$/i);
   return legacy?.[1] || "";
 }
 
 function phaseFromAgentName(name: string): ProjectAgentPhase | "legacy" {
-  if (/-plan$/i.test(name)) return "plan";
-  if (/-build$/i.test(name)) return "build";
-  return "legacy";
+  return parsedModernAgentName(name)?.phase || "legacy";
 }
 
 function assertAgentName(name: string): void {
@@ -414,30 +621,132 @@ function assertAgentName(name: string): void {
     throw new Error("invalid CrowdClaw agent name");
 }
 
+function adminProjectRunnable(status: string): boolean {
+  return !["awaiting_start", "completed", "waiting_funds"].includes(status);
+}
+
+export function adminAgentRegistryCount(): number {
+  return getAllProcesses().filter((proc: any) =>
+    String(proc?.name || "").startsWith(PREFIX),
+  ).length;
+}
+
+/**
+ * Admin is project-centric, not bgrun-history-centric.
+ *
+ * bgrun intentionally keeps historical process records. Showing every old plan
+ * and build record made a project look like several live agents and, worse,
+ * made an old 4.32 planner log look like the current worker. Keep those records
+ * in bgrun for diagnostics, but select exactly one representative process per
+ * CrowdClaw project here: prefer a live process, then the current lifecycle
+ * phase, then the newest historical record.
+ */
 export async function listAdminAgents(): Promise<AdminAgentProcess[]> {
-  const rows = getAllProcesses().filter((proc: any) =>
+  const rows = (getAllProcesses() as any[]).filter((proc: any) =>
     String(proc?.name || "").startsWith(PREFIX),
   );
-  const items = await Promise.all(
-    rows.map(async (proc: any) => {
-      const name = String(proc.name || "");
-      const pid = Number(proc.pid || 0);
-      return {
-        name,
-        projectId: projectIdFromAgentName(name),
-        phase: phaseFromAgentName(name),
-        pid,
-        running: pid > 0 ? await isProcessRunning(pid) : false,
-        stoppedByAdmin: adminStopped.has(name),
-        command: String(proc.command || ""),
-        directory: String(proc.directory || ""),
-        startedAt: Number(proc.timestamp || proc.created_at || 0),
-      } satisfies AdminAgentProcess;
-    }),
-  );
+  const grouped = new Map<string, any[]>();
+  for (const proc of rows) {
+    const projectId = projectIdFromAgentName(String(proc?.name || ""));
+    if (!projectId) continue;
+    const bucket = grouped.get(projectId) || [];
+    bucket.push(proc);
+    grouped.set(projectId, bucket);
+  }
+
+  const items: AdminAgentProcess[] = [];
+  for (const [projectId, records] of grouped) {
+    const project = projectsRepository.get(projectId);
+    // An orphaned bgrun record for a deleted/foreign project is history, not a
+    // current CrowdClaw agent. Leave it visible in bgrun itself, not this panel.
+    if (!project) continue;
+
+    const desiredPhase = phaseForStatus(project.status);
+    const sorted = records.sort(
+      (a: any, b: any) =>
+        Number(b?.timestamp || b?.created_at || 0) -
+        Number(a?.timestamp || a?.created_at || 0),
+    );
+
+    const inspected = await Promise.all(
+      sorted.map(async (proc: any) => {
+        const name = String(proc?.name || "");
+        const pid = Number(proc?.pid || 0);
+        const phase = phaseFromAgentName(name);
+        const running = pid > 0 ? await isProcessRunning(pid) : false;
+        const currentGeneration =
+          phase !== "legacy" &&
+          new RegExp(
+            `^${PREFIX}${projectId}-${phase}-[a-z0-9]+-[a-z0-9]+$`,
+            "i",
+          ).test(name);
+        const identity = running
+          ? await verifyAgentProcessIdentity({
+              pid,
+              name,
+              projectId,
+              currentGeneration,
+            })
+          : { verified: false };
+        return {
+          proc,
+          name,
+          pid,
+          phase,
+          running,
+          verified: running ? Boolean(identity.verified) : false,
+          currentGeneration,
+          startedAt: Number(proc?.timestamp || proc?.created_at || 0),
+        };
+      }),
+    );
+
+    const selected =
+      inspected.find(
+        (item) =>
+          item.running && item.currentGeneration && item.phase === desiredPhase,
+      ) ||
+      inspected.find((item) => item.running && item.currentGeneration) ||
+      inspected.find((item) => item.running) ||
+      inspected.find((item) => item.phase === desiredPhase) ||
+      inspected[0];
+    if (!selected) continue;
+
+    const stoppedByAdmin = isProjectAdminPaused(projectId);
+    const runnable = adminProjectRunnable(project.status);
+    items.push({
+      name: selected.name,
+      projectId,
+      projectName:
+        project.name && project.name !== "new-project"
+          ? project.name
+          : projectId,
+      projectStatus: project.status,
+      phase: selected.phase,
+      pid: selected.pid,
+      running: selected.running,
+      verified: selected.verified,
+      stoppedByAdmin,
+      canStop: selected.running && selected.verified && !stoppedByAdmin,
+      canRestart:
+        runnable &&
+        (!selected.running || selected.verified) &&
+        project.status !== "completed",
+      historical: !selected.running,
+      command: String(selected.proc?.command || ""),
+      directory: String(selected.proc?.directory || ""),
+      startedAt: selected.startedAt,
+    });
+  }
+
   return items.sort(
-    (a: AdminAgentProcess, b: AdminAgentProcess) =>
-      b.startedAt - a.startedAt || a.name.localeCompare(b.name),
+    (a, b) =>
+      Number(b.running) - Number(a.running) ||
+      Number(a.stoppedByAdmin) - Number(b.stoppedByAdmin) ||
+      Number(b.projectStatus === "failed") -
+        Number(a.projectStatus === "failed") ||
+      b.startedAt - a.startedAt ||
+      a.projectName.localeCompare(b.projectName),
   );
 }
 
@@ -466,13 +775,28 @@ export async function readAdminAgentLogs(
 
 export async function stopAdminAgent(name: string): Promise<void> {
   assertAgentName(name);
-  adminStopped.add(name);
-  const proc = getProcess(name) as any;
-  const pid = Number(proc?.pid || 0);
-  if (pid > 0 && (await isProcessRunning(pid))) await terminateProcess(pid);
   const projectId = projectIdFromAgentName(name);
+  if (projectId) setProjectAdminPaused(projectId, true);
+
+  // Stop every live generation for this project. Normally there is one, but
+  // this also cleans up a duplicate left by an older supervisor race.
+  const records = projectId
+    ? getAllProcesses().filter(
+        (proc: any) =>
+          projectIdFromAgentName(String(proc?.name || "")) === projectId,
+      )
+    : [getProcess(name)].filter(Boolean);
+  for (const proc of records as any[]) {
+    const pid = Number(proc?.pid || 0);
+    if (pid > 0 && (await isProcessRunning(pid)))
+      await terminateAgentPid(pid, {
+        projectId,
+        name: String(proc?.name || name),
+        reason: "admin-stop",
+      });
+  }
   if (projectId) projectsRepository.recoverProjectWork(projectId, true);
-  log("info", "agent.admin.stopped", { name, projectId, pid });
+  log("info", "agent.admin.stopped", { name, projectId });
 }
 
 export async function restartAdminAgent(
@@ -480,43 +804,37 @@ export async function restartAdminAgent(
 ): Promise<ProjectAgentProcess> {
   assertAgentName(name);
   const projectId = projectIdFromAgentName(name);
-  const proc = getProcess(name) as any;
-  const pid = Number(proc?.pid || 0);
-  adminStopped.delete(name);
-  if (pid > 0 && (await isProcessRunning(pid))) {
-    await terminateProcess(pid);
-    await Bun.sleep(120);
-  }
-  if (projectId) {
-    projectsRepository.recoverProjectWork(projectId, true);
-    const project = projectsRepository.get(projectId);
-    if (
-      project &&
-      !["awaiting_start", "completed", "failed"].includes(project.status)
-    )
-      return ensureProjectAgent(projectId);
-  }
+  if (!projectId) throw new Error("agent project not found");
 
-  if (!proc) throw new Error("agent not found");
-  await handleRun({
-    action: "run",
-    name,
-    command: String(proc.command || ""),
-    directory: String(proc.directory || PROJECT_ROOT),
-    force: false,
-    remoteName: "",
-  });
-  const restarted = getProcess(name) as any;
-  const nextPid = Number(restarted?.pid || 0);
-  return {
-    name,
-    pid: nextPid,
-    running: nextPid > 0 ? await isProcessRunning(nextPid) : false,
-  };
+  setProjectAdminPaused(projectId, false);
+  for (const proc of getAllProcesses() as any[]) {
+    if (projectIdFromAgentName(String(proc?.name || "")) !== projectId)
+      continue;
+    const pid = Number(proc?.pid || 0);
+    if (pid > 0 && (await isProcessRunning(pid)))
+      await terminateAgentPid(pid, {
+        projectId,
+        name: String(proc?.name || name),
+        reason: "admin-restart",
+      });
+  }
+  await Bun.sleep(120);
+
+  projectsRepository.recoverProjectWork(projectId, true);
+  let project = projectsRepository.get(projectId);
+  if (project?.status === "failed")
+    project = projectsRepository.retryFailed(projectId) || project;
+  if (!project) throw new Error("project not found");
+  if (["awaiting_start", "completed", "waiting_funds"].includes(project.status))
+    throw new Error(`project is not runnable (${project.status})`);
+
+  // ensureProjectAgent always creates a fresh generation name when no worker is
+  // alive, so admin restart cannot enter bgrun's stale-record port cleanup path.
+  return ensureProjectAgent(projectId);
 }
 
 export function isAdminAgentStopped(name: string): boolean {
-  return adminStopped.has(name);
+  return isProjectAdminPaused(projectIdFromAgentName(name));
 }
 
 export async function bgrunHealth(): Promise<{
@@ -529,22 +847,29 @@ export async function bgrunHealth(): Promise<{
     // Health is about CrowdClaw's active projects, not every historical bgrun
     // record. Old stopped experiments can contain dead Windows PIDs and make a
     // simple health probe take seconds if we interrogate all of them.
+    const paused = adminPausedProjectIds();
     const active = projectsRepository
       .list()
       .filter(
         (project) =>
+          !paused.has(project.id) &&
           !["awaiting_start", "completed", "failed"].includes(project.status),
       );
     let running = 0;
     for (const project of active) {
-      const proc =
-        getProcess(
-          projectAgentName(project.id, phaseForStatus(project.status)),
-        ) || getProcess(legacyProjectAgentName(project.id));
+      const proc = await runningProjectAgent(
+        project.id,
+        phaseForStatus(project.status),
+      );
+      if (proc) {
+        running += 1;
+        continue;
+      }
+      const legacy = getProcess(legacyProjectAgentName(project.id));
       if (
-        proc &&
-        Number(proc.pid || 0) > 0 &&
-        (await isProcessRunning(proc.pid))
+        legacy &&
+        Number(legacy.pid || 0) > 0 &&
+        (await isProcessRunning(legacy.pid))
       )
         running += 1;
     }

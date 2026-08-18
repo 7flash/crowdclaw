@@ -3,10 +3,16 @@ import { BrandBar } from "./BrandBar";
 export type AdminAgent = {
   name: string;
   projectId: string;
+  projectName: string;
+  projectStatus: string;
   phase: "plan" | "build" | "legacy";
   pid: number;
   running: boolean;
+  verified: boolean;
   stoppedByAdmin: boolean;
+  canStop: boolean;
+  canRestart: boolean;
+  historical: boolean;
   command: string;
   directory: string;
   startedAt: number;
@@ -14,6 +20,7 @@ export type AdminAgent = {
 
 export function AdminView(props: {
   agents: AdminAgent[];
+  registryCount: number;
   selected: string;
   stdout: string;
   stderr: string;
@@ -29,6 +36,7 @@ export function AdminView(props: {
   onRefreshLogs: () => void;
 }) {
   const selected = props.agents.find((item) => item.name === props.selected);
+  const running = props.agents.filter((item) => item.running).length;
   return (
     <div className="cc min-h-screen">
       <BrandBar />
@@ -39,7 +47,8 @@ export function AdminView(props: {
               Agents
             </h1>
             <div className="mt-2 font-data text-[9px] text-[var(--dimmer)]">
-              BGRUN · {props.agents.length}
+              BGRUN · {running} RUNNING · {props.agents.length} PROJECTS ·{" "}
+              {props.registryCount} RECORDS
             </div>
           </div>
           <button className="cc-mini ml-auto" onClick={props.onRefresh}>
@@ -79,28 +88,26 @@ export function AdminView(props: {
             {props.agents.length ? (
               props.agents.map((agent) => (
                 <button
-                  key={agent.name}
+                  key={agent.projectId}
                   className={`grid w-full grid-cols-[10px_minmax(0,1fr)_auto] items-center gap-3 border-0 border-b border-[var(--line)] bg-transparent px-4 py-3 text-left last:border-b-0 ${props.selected === agent.name ? "bg-white/[.035]" : "hover:bg-white/[.02]"}`}
                   onClick={() => props.onSelect(agent.name)}
                 >
                   <span
-                    className={`h-1.5 w-1.5 rounded-full ${agent.stoppedByAdmin ? "bg-[var(--claw)]" : agent.running ? "bg-[var(--mint)]" : "bg-[var(--dimmer)]"}`}
+                    className={`h-1.5 w-1.5 rounded-full ${agent.stoppedByAdmin ? "bg-[var(--claw)]" : agent.running ? "bg-[var(--mint)]" : agent.projectStatus === "failed" ? "bg-[var(--claw)]" : "bg-[var(--dimmer)]"}`}
                     aria-hidden="true"
                   />
                   <span className="min-w-0">
                     <span className="block truncate font-data text-[9px] text-[var(--bone)]">
-                      {agent.projectId || agent.name}
+                      {agent.projectName}
                     </span>
                     <span className="mt-1 block truncate font-data text-[8px] uppercase tracking-[.1em] text-[var(--dimmer)]">
-                      {agent.phase} · PID {agent.pid || "—"}
+                      {agent.phase} · {agent.projectStatus.replaceAll("_", " ")}{" "}
+                      · PID {agent.pid || "—"}
+                      {agent.running && !agent.verified ? " · UNVERIFIED" : ""}
                     </span>
                   </span>
-                  <span className="font-data text-[8px] text-[var(--dimmer)]">
-                    {agent.stoppedByAdmin
-                      ? "PAUSED"
-                      : agent.running
-                        ? "RUN"
-                        : "STOP"}
+                  <span className="font-data text-[8px] uppercase text-[var(--dimmer)]">
+                    {agentState(agent)}
                   </span>
                 </button>
               ))
@@ -116,7 +123,12 @@ export function AdminView(props: {
               <>
                 <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line)] px-4 py-3">
                   <span className="min-w-0 truncate font-data text-[9px] text-[var(--bone)]">
-                    {selected.name}
+                    {selected.projectName}
+                  </span>
+                  <span className="font-data text-[8px] uppercase tracking-[.1em] text-[var(--dimmer)]">
+                    {selected.running
+                      ? selected.phase
+                      : `LAST ${selected.phase} LOG`}
                   </span>
                   <button
                     className="cc-mini ml-auto"
@@ -126,16 +138,18 @@ export function AdminView(props: {
                   </button>
                   <button
                     className="cc-mini"
-                    disabled={props.busy === selected.name}
+                    disabled={
+                      props.busy === selected.name ||
+                      !selected.canRestart ||
+                      (selected.running && !selected.verified)
+                    }
                     onClick={() => props.onRestart(selected.name)}
                   >
-                    RESTART
+                    {restartLabel(selected)}
                   </button>
                   <button
                     className="cc-mini text-[var(--claw)]"
-                    disabled={
-                      props.busy === selected.name || selected.stoppedByAdmin
-                    }
+                    disabled={props.busy === selected.name || !selected.canStop}
                     onClick={() => props.onStop(selected.name)}
                   >
                     STOP
@@ -156,6 +170,23 @@ export function AdminView(props: {
       </main>
     </div>
   );
+}
+
+function agentState(agent: AdminAgent): string {
+  if (agent.running && !agent.verified) return "UNVERIFIED";
+  if (agent.stoppedByAdmin) return "PAUSED";
+  if (agent.running) return "RUN";
+  if (agent.projectStatus === "failed") return "FAILED";
+  if (agent.projectStatus === "awaiting_start") return "READY";
+  if (agent.projectStatus === "completed") return "DONE";
+  if (agent.projectStatus === "waiting_funds") return "FUND";
+  return "IDLE";
+}
+
+function restartLabel(agent: AdminAgent): string {
+  if (agent.stoppedByAdmin) return "RESUME";
+  if (agent.projectStatus === "failed") return "RETRY";
+  return "RESTART";
 }
 
 function LogPane(props: { label: string; text: string }) {

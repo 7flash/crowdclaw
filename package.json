@@ -1,6 +1,6 @@
 {
   "name": "crowdclaw",
-  "version": "4.41.0",
+  "version": "4.48.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "@openai/codex-sdk": "latest",
-    "@solard/sdk": "0.2.3",
     "bgrun": "3.14.0",
     "jsx-ai": "latest",
     "measure-fn": "4.0.5",
@@ -26,7 +25,8 @@
     "tailwindcss": "4.1.10",
     "tradjs": "4.3.0",
     "zod": "3.25.67",
-    "three": "latest"
+    "three": "latest",
+    "viem": "latest"
   },
   "devDependencies": {
     "@types/bun": "latest",
@@ -35,7 +35,7 @@
   "tradjs": {
     "serverOnly": [
       "@openai/codex-sdk",
-      "@solard/sdk",
+      "viem",
       "bgrun",
       "jsx-ai",
       "sqlite-zod-orm",

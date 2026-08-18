@@ -903,7 +903,7 @@ export const projectsRepository = {
           : String(error || "planning failed");
     const note = /(?:\b429\b|quota|rate.?limit)/i.test(message)
       ? "QUOTA"
-      : /(?:database is locked|database table is locked|SQLITE_BUSY|CrowdClaw database writer lock timed out|CrowdClaw database write remained busy)/i.test(
+      : /(?:database is locked|database table is locked|SQLITE_BUSY)/i.test(
             message,
           )
         ? "DB BUSY"

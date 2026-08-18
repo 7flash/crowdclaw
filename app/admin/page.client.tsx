@@ -10,6 +10,7 @@ export default function mount() {
 
   let state = {
     agents: [] as AdminAgent[],
+    registryCount: 0,
     selected: "",
     stdout: "",
     stderr: "",
@@ -26,6 +27,7 @@ export default function mount() {
     render(
       <AdminView
         agents={state.agents}
+        registryCount={state.registryCount}
         selected={state.selected}
         stdout={state.stdout}
         stderr={state.stderr}
@@ -68,18 +70,33 @@ export default function mount() {
 
   const refresh = async (refreshLogs = false) => {
     try {
-      const body = await readResponse<{ agents: AdminAgent[] }>(
+      const previous = state.agents.find(
+        (item) => item.name === state.selected,
+      );
+      const body = await readResponse<{
+        agents: AdminAgent[];
+        registryCount: number;
+      }>(
         await fetch("/api/admin/agents", {
           cache: "no-store",
           headers: headers(),
         }),
       );
       state.agents = body.agents;
-      if (
+      state.registryCount = Number(body.registryCount || body.agents.length);
+      // A restart creates a fresh bgrun generation name. Preserve selection by
+      // project so the detail pane follows the new generation automatically.
+      if (previous) {
+        const replacement = state.agents.find(
+          (item) => item.projectId === previous.projectId,
+        );
+        state.selected = replacement?.name || "";
+      } else if (
         state.selected &&
         !state.agents.some((item) => item.name === state.selected)
-      )
+      ) {
         state.selected = "";
+      }
       if (!state.selected && state.agents.length)
         state.selected = state.agents[0].name;
       state.error = "";
@@ -123,13 +140,18 @@ export default function mount() {
     state.busy = name;
     draw();
     try {
-      await readResponse(
+      const body = await readResponse<{
+        ok: boolean;
+        process?: { name?: string };
+      }>(
         await fetch(`/api/admin/agents/${encodeURIComponent(name)}`, {
           method: "POST",
           headers: { "content-type": "application/json", ...headers() },
           body: JSON.stringify({ action }),
         }),
       );
+      if (action === "restart" && body.process?.name)
+        state.selected = body.process.name;
       state.error = "";
       await refresh(true);
     } catch (error) {
