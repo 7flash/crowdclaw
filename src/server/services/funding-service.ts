@@ -2,6 +2,7 @@ import { measure } from "measure-fn";
 import { fundingSyncMs, lamportsPerCredit } from "../config";
 import { projectsRepository } from "../db/project-repository";
 import { log } from "../log";
+import { publishNotification } from "../notification-feed";
 import {
   getBalanceLamports,
   getRecentInboundTransfers,
@@ -89,6 +90,18 @@ export async function syncProjectFunding(
               "funding.donation",
               `Indexed ${donation.credits.toFixed(2)} build credits of inbound SOL from ${short(donation.fromAddress)}.`,
             );
+            publishNotification("donation.received", project.id, {
+              projectName: stored.project.name,
+              donationId: donation.id,
+              signature: donation.signature,
+              fromAddress: donation.fromAddress,
+              lamports: donation.lamports,
+              sol: donation.lamports / 1_000_000_000,
+              credits: donation.credits,
+              slot: donation.slot,
+              blockTime: donation.blockTime,
+              source: donation.source,
+            });
           }
         } catch (error) {
           log("warn", "funding.donation_index_failed", {

@@ -1,5 +1,6 @@
 import { measure } from "measure-fn";
 import { projectsRepository } from "../db/project-repository";
+import { publishNotification } from "../notification-feed";
 import { createProjectWallet } from "../wallets/solard";
 import type { Project, ProjectBundle } from "../../shared/types";
 
@@ -52,6 +53,13 @@ export async function createProject(idea: string): Promise<Project> {
             "Idea created; autonomous agent assigned.",
           ),
       );
+      publishNotification("project.created", id, {
+        name: created.name,
+        idea: created.idea,
+        agentId: created.agentId,
+        walletAddress: created.walletAddress,
+        status: created.status,
+      });
       await measure(
         {
           start: () => "Event wallet.created",

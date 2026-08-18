@@ -9,6 +9,7 @@ import {
 import { sealHtml, toMilestone, validateArtifactHtml } from "../agent/output";
 import { modelName } from "../config";
 import { projectsRepository } from "../db/project-repository";
+import { log } from "../log";
 import type { Project } from "../../shared/types";
 import { publicErrorLabel } from "../../shared/public-error";
 
@@ -28,8 +29,71 @@ function isTimeoutError(message: string): boolean {
   return /(?:request\s+timed\s*out|timed\s*out|timeout)/i.test(message);
 }
 
+function publishBuildNotification(
+  type: string,
+  projectId: string,
+  payload: Record<string, unknown>,
+): void {
+  void import("../notification-feed")
+    .then(({ publishNotification }) =>
+      publishNotification(type, projectId, payload),
+    )
+    .catch((error) =>
+      log("warn", "notification.module_unavailable", {
+        type,
+        projectId,
+        error: errorMessage(error),
+      }),
+    );
+}
+
+function isDatabaseBusy(error: unknown): boolean {
+  return /(?:database is locked|database table is locked|SQLITE_BUSY|CrowdClaw database writer lock timed out|CrowdClaw database write remained busy)/i.test(
+    errorMessage(error),
+  );
+}
+
+function persistLiveProgress(
+  projectId: string,
+  runId: string,
+  input: Parameters<typeof projectsRepository.updateLiveProgress>[2],
+): void {
+  try {
+    projectsRepository.updateLiveProgress(projectId, runId, input);
+  } catch (error) {
+    // Live counters are telemetry, not build correctness. Let the model turn
+    // continue; otherwise JSX-AI wraps this callback exception as a misleading
+    // "Codex runtime failed: database is locked".
+    if (!isDatabaseBusy(error)) throw error;
+    log("warn", "agent.progress.db_busy", {
+      projectId,
+      runId,
+      error: errorMessage(error),
+    });
+  }
+}
+
+function persistActivityEvent(
+  projectId: string,
+  type: string,
+  message: string,
+): void {
+  try {
+    projectsRepository.event(projectId, type, message);
+  } catch (error) {
+    // Status/event telemetry must never throw through JSX-AI's onEvent callback.
+    // Critical lifecycle writes still use the normal retrying repository path.
+    if (!isDatabaseBusy(error)) throw error;
+    log("warn", "agent.activity.db_busy", {
+      projectId,
+      type,
+      error: errorMessage(error),
+    });
+  }
+}
+
 function isTransientModelError(message: string): boolean {
-  return /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error)/i.test(
+  return /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error|database is locked|SQLITE_BUSY|another Codex process is using its local data|failed to initialize sqlite (?:state )?runtime)/i.test(
     message,
   );
 }
@@ -52,7 +116,6 @@ function usagePatch(usage: AgentUsage) {
 
 function progressWriter(projectId: string, runId: string) {
   let lastWrite = 0;
-  let lastLength = 0;
   let lastNote = "";
   return (
     text: string,
@@ -63,33 +126,20 @@ function progressWriter(projectId: string, runId: string) {
   ) => {
     const t = Date.now();
     const noteChanged = note !== lastNote;
-    if (
-      !force &&
-      !noteChanged &&
-      t - lastWrite < 250 &&
-      text.length - lastLength < 80
-    )
-      return;
+    // The browser does not need one SQLite transaction per model delta. Persist
+    // a fresh snapshot a couple of times per second; the sequence still jumps to
+    // the latest model event, so no semantic progress is lost.
+    if (!force && !noteChanged && t - lastWrite < 600) return;
     lastWrite = t;
-    lastLength = text.length;
     lastNote = note;
-    const preview = text.slice(-1800);
-    const streamedAt = Date.now();
-    projectsRepository.updateRunUsage(runId, {
+    persistLiveProgress(projectId, runId, {
       ...usagePatch(usage),
       streamChars: text.length,
-      streamUpdatedAt: streamedAt,
+      streamUpdatedAt: t,
       ...(streamEventCount !== undefined ? { streamEventCount } : {}),
-      preview,
+      preview: text.slice(-1800),
       note,
     });
-    projectsRepository.updateLiveRun(
-      projectId,
-      runId,
-      preview,
-      note,
-      streamEventCount,
-    );
   };
 }
 
@@ -113,36 +163,23 @@ function planningLiveWriter(projectId: string, runId: string) {
   let assistantText = "";
   let status = "";
   let lastWrite = 0;
-  let lastLength = 0;
+  let lastStatus = "";
   return (update: AgentStreamUpdate, force = false) => {
     if (update.kind === "text") assistantText = update.text;
     else status = update.text;
-    const now = Date.now();
+    const t = Date.now();
     const preview = assistantText ? `A|${assistantText}` : "";
-    if (
-      !force &&
-      update.kind === "text" &&
-      now - lastWrite < 120 &&
-      preview.length - lastLength < 24
-    )
-      return;
-    lastWrite = now;
-    lastLength = preview.length;
-    const streamedAt = Date.now();
-    projectsRepository.updateRunUsage(runId, {
+    const statusChanged = status !== lastStatus;
+    if (!force && !statusChanged && t - lastWrite < 500) return;
+    lastWrite = t;
+    lastStatus = status;
+    persistLiveProgress(projectId, runId, {
       streamChars: preview.length,
-      streamUpdatedAt: streamedAt,
+      streamUpdatedAt: t,
       streamEventCount: update.sequence || 0,
       preview,
       note: status,
     });
-    projectsRepository.updateLiveRun(
-      projectId,
-      runId,
-      preview,
-      status,
-      update.sequence,
-    );
   };
 }
 
@@ -152,7 +189,17 @@ function heartbeat(
   leaseMs: number,
 ): () => void {
   const timer = setInterval(
-    () => projectsRepository.heartbeat(projectId, owner, leaseMs),
+    () => {
+      try {
+        projectsRepository.heartbeat(projectId, owner, leaseMs);
+      } catch (error) {
+        if (!isDatabaseBusy(error)) throw error;
+        log("warn", "agent.heartbeat.db_busy", {
+          projectId,
+          error: errorMessage(error),
+        });
+      }
+    },
     Math.max(1000, Math.floor(leaseMs / 3)),
   );
   return () => clearInterval(timer);
@@ -278,13 +325,16 @@ export async function planProject(
     );
   } catch (error) {
     const message = errorMessage(error);
+    const dbBusy = isDatabaseBusy(error);
     const quota = isQuotaError(message);
-    const transient = !quota && isTransientModelError(message);
-    const publicMessage = quota
-      ? "QUOTA"
-      : transient
-        ? "BUSY"
-        : publicErrorLabel(message);
+    const transient = !quota && !dbBusy && isTransientModelError(message);
+    const publicMessage = dbBusy
+      ? "DB BUSY"
+      : quota
+        ? "QUOTA"
+        : transient
+          ? "BUSY"
+          : publicErrorLabel(message);
     projectsRepository.finishRun(run.id, "failed", {
       ...(usage ? usagePatch(usage) : {}),
       streamChars: text.length,
@@ -293,9 +343,13 @@ export async function planProject(
       error: message,
     });
 
-    if (transient) {
+    if (dbBusy || transient) {
       const latest = projectsRepository.get(project.id) || project;
-      const retryAt = Date.now() + backoff(latest.failureCount);
+      // Local SQLite contention is infrastructure backpressure, not a failed
+      // model attempt. Retry quickly and do not poison the model failure count.
+      const retryAt = dbBusy
+        ? Date.now() + 1_500
+        : Date.now() + backoff(latest.failureCount);
       await measure(
         {
           start: () => "Schedule plan retry",
@@ -314,9 +368,14 @@ export async function planProject(
             false,
             message,
             retryAt,
+            !dbBusy,
           ),
       );
-      projectsRepository.event(project.id, "agent.busy", "MODEL BUSY");
+      projectsRepository.event(
+        project.id,
+        dbBusy ? "agent.db_busy" : "agent.busy",
+        dbBusy ? "DATABASE BUSY" : "MODEL BUSY",
+      );
     } else {
       // Quota and malformed/permanent provider errors are not retried automatically.
       // Planning remains one model step; transient retries create a fresh run later.
@@ -425,13 +484,16 @@ export async function buildNext(
                   false,
                   activity.sequence,
                 );
-                if (
+                const durableActivity =
                   activity.event !== false &&
                   activity.note &&
-                  activity.note !== lastActivityEvent
-                ) {
+                  !/^game\.tsx\s*[·-]/i.test(activity.note) &&
+                  !/^(?:BUILDING|DONE|RETRY|WRITE\s+game\.tsx)$/i.test(
+                    activity.note,
+                  );
+                if (durableActivity && activity.note !== lastActivityEvent) {
                   lastActivityEvent = activity.note;
-                  projectsRepository.event(
+                  persistActivityEvent(
                     project.id,
                     "agent.activity",
                     activity.note,
@@ -533,27 +595,50 @@ export async function buildNext(
       "artifact.published",
       `Published v${milestoneIndex + 1}: ${milestone.title}.`,
     );
+    publishBuildNotification("milestone.completed", project.id, {
+      projectName: project.name,
+      milestoneIndex,
+      version: milestoneIndex + 1,
+      title: milestone.title,
+      runId: run.id,
+      inputTokens: usage?.inputTokens || 0,
+      outputTokens: usage?.outputTokens || 0,
+      thinkingTokens: usage?.thinkingTokens || 0,
+      totalTokens:
+        (usage?.inputTokens || 0) +
+        (usage?.outputTokens || 0) +
+        (usage?.thinkingTokens || 0),
+    });
   } catch (error) {
     const message = errorMessage(error);
     const quota = isQuotaError(message);
+    const dbBusy = isDatabaseBusy(error);
     const timedOut = isTimeoutError(message);
-    const transient = !quota && isTransientModelError(message);
+    const transient = !quota && !dbBusy && isTransientModelError(message);
     const latest = projectsRepository.get(project.id) || project;
     const failures = latest.failureCount + 1;
     // A timeout is transient once or twice, but an endless 150s retry loop is not
     // useful. The model timeout itself grows per retry in jsx-agent; after three
     // timed-out attempts, surface a real failure instead of pretending to build.
-    const terminal = timedOut
-      ? failures >= 3
-      : !transient && failures >= MAX_FAILURES;
-    const retryAt = terminal ? 0 : Date.now() + backoff(latest.failureCount);
-    const note = quota
-      ? "QUOTA"
+    const terminal = dbBusy
+      ? false
       : timedOut
-        ? "TIMEOUT"
-        : transient
-          ? "BUSY"
-          : "RETRY";
+        ? failures >= 3
+        : !transient && failures >= MAX_FAILURES;
+    const retryAt = terminal
+      ? 0
+      : dbBusy
+        ? Date.now() + 1_500
+        : Date.now() + backoff(latest.failureCount);
+    const note = dbBusy
+      ? "DB BUSY"
+      : quota
+        ? "QUOTA"
+        : timedOut
+          ? "TIMEOUT"
+          : transient
+            ? "BUSY"
+            : "RETRY";
     projectsRepository.finishRun(run.id, "failed", {
       ...(usage ? usagePatch(usage) : {}),
       preview: activityText,
@@ -566,16 +651,21 @@ export async function buildNext(
       terminal ? "failed" : "queued",
       message,
       retryAt,
+      !dbBusy,
     );
-    if (released && !terminal && transient) {
+    if (released && !terminal && (dbBusy || transient)) {
       projectsRepository.setStatus(project.id, "queued", {
-        agentNote: timedOut ? "TIMEOUT" : "BUSY",
+        agentNote: dbBusy ? "DB BUSY" : timedOut ? "TIMEOUT" : "BUSY",
         retryAt,
       });
       projectsRepository.event(
         project.id,
-        timedOut ? "agent.timeout" : "agent.busy",
-        timedOut ? "MODEL REQUEST TIMED OUT" : "MODEL BUSY",
+        dbBusy ? "agent.db_busy" : timedOut ? "agent.timeout" : "agent.busy",
+        dbBusy
+          ? "DATABASE BUSY"
+          : timedOut
+            ? "MODEL REQUEST TIMED OUT"
+            : "MODEL BUSY",
       );
     } else if (released) {
       projectsRepository.event(
@@ -583,6 +673,15 @@ export async function buildNext(
         terminal ? "agent.failed" : "agent.retry",
         message,
       );
+      if (terminal)
+        publishBuildNotification("milestone.failed", project.id, {
+          projectName: project.name,
+          milestoneIndex,
+          version: milestoneIndex + 1,
+          title: milestone.title,
+          runId: run.id,
+          error: message,
+        });
     }
   } finally {
     stopHeartbeat();

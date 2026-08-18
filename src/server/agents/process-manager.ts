@@ -10,6 +10,7 @@ import {
 import { measure } from "measure-fn";
 import { projectsRepository } from "../db/project-repository";
 import { errorMessage, log } from "../log";
+import { publishNotification } from "../notification-feed";
 import { publicErrorLabel } from "../../shared/public-error";
 
 const PREFIX = "crowdclaw-agent-";
@@ -26,7 +27,7 @@ export type ProjectAgentProcess = {
 };
 
 function isTransientProviderError(message: string): boolean {
-  return /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error)/i.test(
+  return /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error|database is locked|SQLITE_BUSY|another Codex process is using its local data|failed to initialize sqlite (?:state )?runtime)/i.test(
     message,
   );
 }
@@ -181,7 +182,7 @@ export async function ensureProjectAgent(
   // 60-second lease before it can retry the milestone.
   projectsRepository.recoverProjectWork(projectId, true);
 
-  const command = `bun project-agent.ts ${projectId}`;
+  const command = `bun project-agent-launch.ts ${projectId} ${phase}`;
   const launched = await measure(
     {
       start: () => "Start bgrun agent",
@@ -281,6 +282,12 @@ export async function ensureProjectAgent(
         projectId,
         name,
         pid: started.pid,
+      });
+      publishNotification("agent.started", projectId, {
+        projectName: project.name,
+        name,
+        pid: Number(started.pid),
+        phase,
       });
       return { name, pid: Number(started.pid), running: true };
     }

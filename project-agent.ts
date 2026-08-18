@@ -314,13 +314,14 @@ async function tick(): Promise<boolean> {
 }
 
 log("info", "agent.process.ready", {
-  version: "4.35.0",
+  version: "4.39.0",
   jsxAiVersion,
   projectId,
   pid: process.pid,
   owner,
   runtime: jsxAiRuntime() || "provider",
   model: jsxAiRuntime() === "codex" ? "codex-config" : modelName(),
+  codexSqliteHome: process.env.CODEX_SQLITE_HOME || "shared",
 });
 
 while (!stopping) {

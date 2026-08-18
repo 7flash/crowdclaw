@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { db } from "./database";
+import { databaseTransaction, databaseWrite, db } from "./database";
 import {
   contextWindow,
   lamportsPerCredit,
@@ -285,18 +285,20 @@ function ledgerFromRow(row: any): CreditLedgerEntry {
 }
 
 function insertLedger(input: Omit<CreditLedgerEntry, "id">): CreditLedgerEntry {
-  return ledgerFromRow(
-    db.creditLedger.insert({
-      ledgerId: uid("l"),
-      projectId: input.projectId,
-      kind: input.kind,
-      credits: round2(input.credits),
-      runId: input.runId || "",
-      milestoneIndex: input.milestoneIndex,
-      reference: input.reference || "",
-      note: input.note.slice(0, 300),
-      createdAt: input.createdAt,
-    }) as any,
+  return databaseWrite(() =>
+    ledgerFromRow(
+      db.creditLedger.insert({
+        ledgerId: uid("l"),
+        projectId: input.projectId,
+        kind: input.kind,
+        credits: round2(input.credits),
+        runId: input.runId || "",
+        milestoneIndex: input.milestoneIndex,
+        reference: input.reference || "",
+        note: input.note.slice(0, 300),
+        createdAt: input.createdAt,
+      }) as any,
+    ),
   );
 }
 
@@ -442,37 +444,39 @@ export const projectsRepository = {
     idea: string;
     walletAddress: string;
   }): Project {
-    const createdAt = now();
-    const projectId = input.projectId || uid("p");
-    const row = db.projects.insert({
-      projectId,
-      name: "new-project",
-      idea: input.idea,
-      summary: input.idea,
-      status: "planning",
-      agentId: `claw-${projectId.slice(-6)}`,
-      walletAddress: input.walletAddress,
-      milestones: [],
-      done: 0,
-      spentCredits: 0,
-      reservedCredits: 0,
-      onchainLamports: 0,
-      creditedLamports: 0,
-      manualCredits: 0,
-      currentRunId: null,
-      agentNote: "PLAN",
-      streamPreview: "",
-      lastFundingSyncAt: 0,
-      fundingError: "",
-      failureCount: 0,
-      retryAt: 0,
-      error: "",
-      leaseOwner: "",
-      leaseUntil: 0,
-      createdAt,
-      updatedAt: createdAt,
-    }) as any;
-    return projectFromRow(row);
+    return databaseWrite(() => {
+      const createdAt = now();
+      const projectId = input.projectId || uid("p");
+      const row = db.projects.insert({
+        projectId,
+        name: "new-project",
+        idea: input.idea,
+        summary: input.idea,
+        status: "planning",
+        agentId: `claw-${projectId.slice(-6)}`,
+        walletAddress: input.walletAddress,
+        milestones: [],
+        done: 0,
+        spentCredits: 0,
+        reservedCredits: 0,
+        onchainLamports: 0,
+        creditedLamports: 0,
+        manualCredits: 0,
+        currentRunId: null,
+        agentNote: "PLAN",
+        streamPreview: "",
+        lastFundingSyncAt: 0,
+        fundingError: "",
+        failureCount: 0,
+        retryAt: 0,
+        error: "",
+        leaseOwner: "",
+        leaseUntil: 0,
+        createdAt,
+        updatedAt: createdAt,
+      }) as any;
+      return projectFromRow(row);
+    });
   },
 
   setFunding(
@@ -482,7 +486,7 @@ export const projectsRepository = {
   ): { project: Project; newlyCreditedLamports: number } | null {
     let result: { project: Project; newlyCreditedLamports: number } | null =
       null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       backfillLedgerIfNeeded(row);
@@ -530,7 +534,7 @@ export const projectsRepository = {
   },
 
   setFundingError(projectId: string, error: string): void {
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       row.lastFundingSyncAt = now();
@@ -541,7 +545,7 @@ export const projectsRepository = {
 
   addManualCredits(projectId: string, credits: number): Project | null {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       backfillLedgerIfNeeded(row);
@@ -569,7 +573,7 @@ export const projectsRepository = {
     voterKey: string,
   ): { project: Project; accepted: boolean } | null {
     let result: { project: Project; accepted: boolean } | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       const project = projectFromRow(row);
@@ -628,7 +632,7 @@ export const projectsRepository = {
       milestoneKey?: string;
       reason?: string;
     } | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       const project = projectFromRow(row);
@@ -709,7 +713,7 @@ export const projectsRepository = {
     milestones: Milestone[],
   ): Project {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) throw new Error("project not found");
       if (row.currentRunId !== runId)
@@ -745,7 +749,7 @@ export const projectsRepository = {
 
   startBuild(projectId: string): Project | null {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       const project = projectFromRow(row);
@@ -774,7 +778,7 @@ export const projectsRepository = {
 
   retryFailed(projectId: string): Project | null {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       const project = projectFromRow(row);
@@ -833,7 +837,7 @@ export const projectsRepository = {
     }> = {},
   ): Project | null {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       row.status = status;
@@ -869,7 +873,7 @@ export const projectsRepository = {
     }> = {},
   ): Project | null {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row || row.currentRunId !== runId) return;
       row.status = status;
@@ -889,6 +893,7 @@ export const projectsRepository = {
     terminal: boolean,
     error: unknown,
     retryAt: number,
+    countFailure = true,
   ): Project | null {
     const message =
       error instanceof Error
@@ -898,22 +903,30 @@ export const projectsRepository = {
           : String(error || "planning failed");
     const note = /(?:\b429\b|quota|rate.?limit)/i.test(message)
       ? "QUOTA"
-      : /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error)/i.test(
+      : /(?:database is locked|database table is locked|SQLITE_BUSY|CrowdClaw database writer lock timed out|CrowdClaw database write remained busy)/i.test(
             message,
           )
-        ? "BUSY"
-        : "MODEL ERROR";
+        ? "DB BUSY"
+        : /(?:\b50[234]\b|\b503\b|UNAVAILABLE|high demand|temporar(?:y|ily)|timeout|timed out|ECONNRESET|ETIMEDOUT|fetch failed|network error)/i.test(
+              message,
+            )
+          ? "BUSY"
+          : "MODEL ERROR";
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row || row.currentRunId !== runId) return;
       row.currentRunId = null;
       row.streamPreview = "";
       row.error = message.slice(0, 500);
-      row.failureCount = Number(row.failureCount || 0) + 1;
+      if (countFailure) row.failureCount = Number(row.failureCount || 0) + 1;
       row.retryAt = terminal ? 0 : retryAt;
       row.status = terminal ? "failed" : "planning";
-      row.agentNote = terminal ? note : note === "BUSY" ? "BUSY" : "RETRY";
+      row.agentNote = terminal
+        ? note
+        : note === "BUSY" || note === "DB BUSY"
+          ? note
+          : "RETRY";
       row.updatedAt = now();
       result = projectFromRow(row);
     });
@@ -922,7 +935,7 @@ export const projectsRepository = {
 
   markQueuedIfFunded(projectId: string): Project | null {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       const project = projectFromRow(row);
@@ -954,7 +967,7 @@ export const projectsRepository = {
     runId: string,
   ): Project {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) throw new Error("project not found");
       if (Number(row.done || 0) !== expectedDone)
@@ -989,7 +1002,7 @@ export const projectsRepository = {
     note = "",
     streamEventCount?: number,
   ): void {
-    db.transaction(() => {
+    databaseTransaction(() => {
       const project = rowByProjectId(projectId);
       const run = rowByRunId(runId);
       if (
@@ -1015,6 +1028,85 @@ export const projectsRepository = {
     });
   },
 
+  updateLiveProgress(
+    projectId: string,
+    runId: string,
+    input: {
+      inputTokens?: number;
+      outputTokens?: number;
+      thinkingTokens?: number;
+      cacheCreationInputTokens?: number;
+      cacheReadInputTokens?: number;
+      lastContextTokens?: number;
+      usageEstimated?: boolean;
+      streamChars?: number;
+      streamUpdatedAt?: number;
+      streamEventCount?: number;
+      preview: string;
+      note?: string;
+    },
+  ): void {
+    databaseTransaction(() => {
+      const project = rowByProjectId(projectId);
+      const run = rowByRunId(runId);
+      if (
+        !project ||
+        !run ||
+        project.currentRunId !== runId ||
+        run.status !== "running"
+      )
+        return;
+
+      if (input.inputTokens !== undefined)
+        run.inputTokens = Math.max(0, Math.floor(input.inputTokens));
+      if (input.outputTokens !== undefined)
+        run.outputTokens = Math.max(0, Math.floor(input.outputTokens));
+      if (input.thinkingTokens !== undefined)
+        run.thinkingTokens = Math.max(0, Math.floor(input.thinkingTokens));
+      if (input.cacheCreationInputTokens !== undefined)
+        run.cacheCreationInputTokens = Math.max(
+          0,
+          Math.floor(input.cacheCreationInputTokens),
+        );
+      if (input.cacheReadInputTokens !== undefined)
+        run.cacheReadInputTokens = Math.max(
+          0,
+          Math.floor(input.cacheReadInputTokens),
+        );
+      if (input.lastContextTokens !== undefined)
+        run.lastContextTokens = Math.max(
+          0,
+          Math.floor(input.lastContextTokens),
+        );
+      if (input.usageEstimated !== undefined)
+        run.usageEstimated = Boolean(input.usageEstimated);
+      if (input.streamChars !== undefined)
+        run.streamChars = Math.max(0, Math.floor(input.streamChars));
+
+      const streamedAt = Math.max(
+        0,
+        Math.floor(input.streamUpdatedAt ?? now()),
+      );
+      const clipped = input.preview.slice(-1800);
+      const note = input.note?.slice(0, 220) || "";
+      const sequence =
+        input.streamEventCount === undefined
+          ? undefined
+          : Math.max(0, Math.floor(input.streamEventCount));
+
+      project.streamPreview = clipped;
+      project.streamUpdatedAt = streamedAt;
+      if (sequence !== undefined) project.streamEventCount = sequence;
+      if (note) project.agentNote = note;
+      project.updatedAt = streamedAt;
+
+      run.streamUpdatedAt = streamedAt;
+      if (sequence !== undefined) run.streamEventCount = sequence;
+      run.preview = clipped;
+      if (note) run.note = note;
+    });
+  },
+
   ship(
     projectId: string,
     expectedDone: number,
@@ -1023,7 +1115,7 @@ export const projectsRepository = {
     steeringIds: string[] = [],
   ): Project {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) throw new Error("project not found");
       backfillLedgerIfNeeded(row);
@@ -1107,9 +1199,10 @@ export const projectsRepository = {
     status: ProjectStatus,
     error: string,
     retryAt = 0,
+    countFailure = true,
   ): Project | null {
     let result: Project | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row || row.currentRunId !== runId) return;
       const project = projectFromRow(row);
@@ -1125,7 +1218,7 @@ export const projectsRepository = {
       row.agentNote = status === "failed" ? "STOPPED" : "RETRY";
       // Keep the last public runtime/build activity visible while a retry is
       // waiting. Clearing it made a timed-out build look like a frozen blank UI.
-      row.failureCount = Number(row.failureCount || 0) + 1;
+      if (countFailure) row.failureCount = Number(row.failureCount || 0) + 1;
       row.retryAt = retryAt;
       row.updatedAt = now();
       result = projectFromRow(row);
@@ -1139,33 +1232,35 @@ export const projectsRepository = {
     milestoneIndex: number;
     model: string;
   }): AgentRun {
-    const startedAt = now();
-    const row = db.runs.insert({
-      runId: uid("r"),
-      projectId: input.projectId,
-      kind: input.kind,
-      status: "running",
-      milestoneIndex: input.milestoneIndex,
-      model: input.model,
-      inputTokens: 0,
-      outputTokens: 0,
-      thinkingTokens: 0,
-      cacheCreationInputTokens: 0,
-      cacheReadInputTokens: 0,
-      lastContextTokens: 0,
-      contextWindow: contextWindow(),
-      usageEstimated: false,
-      streamChars: 0,
-      streamUpdatedAt: startedAt,
-      streamEventCount: 0,
-      preview: "",
-      note: "",
-      error: "",
-      startedAt,
-      finishedAt: 0,
-      chargedCredits: 0,
-    }) as any;
-    return runFromRow(row);
+    return databaseWrite(() => {
+      const startedAt = now();
+      const row = db.runs.insert({
+        runId: uid("r"),
+        projectId: input.projectId,
+        kind: input.kind,
+        status: "running",
+        milestoneIndex: input.milestoneIndex,
+        model: input.model,
+        inputTokens: 0,
+        outputTokens: 0,
+        thinkingTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        lastContextTokens: 0,
+        contextWindow: contextWindow(),
+        usageEstimated: false,
+        streamChars: 0,
+        streamUpdatedAt: startedAt,
+        streamEventCount: 0,
+        preview: "",
+        note: "",
+        error: "",
+        startedAt,
+        finishedAt: 0,
+        chargedCredits: 0,
+      }) as any;
+      return runFromRow(row);
+    });
   },
 
   updateRunUsage(
@@ -1186,7 +1281,7 @@ export const projectsRepository = {
     }>,
   ): AgentRun | null {
     let result: AgentRun | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByRunId(runId);
       if (!row || row.status !== "running") return;
       if (usage.inputTokens !== undefined)
@@ -1242,7 +1337,7 @@ export const projectsRepository = {
     }> = {},
   ): AgentRun | null {
     let result: AgentRun | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByRunId(runId);
       if (!row) return;
       if (row.status !== "running") {
@@ -1324,7 +1419,7 @@ export const projectsRepository = {
     }>,
   ): Donation[] {
     const inserted: Donation[] = [];
-    db.transaction(() => {
+    databaseTransaction(() => {
       for (const transfer of transfers) {
         if (!transfer.signature || transfer.lamports <= 0) continue;
         const exists = db.donations
@@ -1438,7 +1533,7 @@ export const projectsRepository = {
     lamports: number;
   }): TreasuryGrant {
     let result: TreasuryGrant | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const existing = db.treasuryGrants
         .select()
         .where({ projectId: input.projectId, purpose: "first_milestone" })
@@ -1479,7 +1574,7 @@ export const projectsRepository = {
     signature: string,
   ): TreasuryGrant {
     let result: TreasuryGrant | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = db.treasuryGrants
         .select()
         .where({ projectId, purpose: "first_milestone" })
@@ -1498,7 +1593,7 @@ export const projectsRepository = {
 
   confirmTreasuryGrant(projectId: string): TreasuryGrant | null {
     let result: TreasuryGrant | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = db.treasuryGrants
         .select()
         .where({ projectId, purpose: "first_milestone" })
@@ -1514,7 +1609,7 @@ export const projectsRepository = {
 
   failTreasuryGrant(projectId: string, error: string): TreasuryGrant | null {
     let result: TreasuryGrant | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = db.treasuryGrants
         .select()
         .where({ projectId, purpose: "first_milestone" })
@@ -1552,21 +1647,23 @@ export const projectsRepository = {
     projectId: string,
     address: string,
   ): { id: string; message: string; expiresAt: number } {
-    const createdAt = now();
-    const challengeId = uid("sc");
-    const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
-    const message = `CrowdClaw steer\nproject:${projectId}\naddress:${address}\nnonce:${nonce}`;
-    const expiresAt = createdAt + 5 * 60_000;
-    db.steeringChallenges.insert({
-      challengeId,
-      projectId,
-      address,
-      message,
-      expiresAt,
-      usedAt: 0,
-      createdAt,
+    return databaseWrite(() => {
+      const createdAt = now();
+      const challengeId = uid("sc");
+      const nonce = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+      const message = `CrowdClaw steer\nproject:${projectId}\naddress:${address}\nnonce:${nonce}`;
+      const expiresAt = createdAt + 5 * 60_000;
+      db.steeringChallenges.insert({
+        challengeId,
+        projectId,
+        address,
+        message,
+        expiresAt,
+        usedAt: 0,
+        createdAt,
+      });
+      return { id: challengeId, message, expiresAt };
     });
-    return { id: challengeId, message, expiresAt };
   },
 
   steeringChallenge(
@@ -1595,7 +1692,7 @@ export const projectsRepository = {
     influence: number;
   }): Steering {
     let result: Steering | null = null;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const challenge = db.steeringChallenges
         .select()
         .where({
@@ -1653,14 +1750,16 @@ export const projectsRepository = {
   },
 
   event(projectId: string, type: string, message: string): ProjectEvent {
-    const row = db.events.insert({
-      eventId: uid("e"),
-      projectId,
-      type,
-      message: message.slice(0, 500),
-      createdAt: now(),
-    }) as any;
-    return eventFromRow(row);
+    return databaseWrite(() => {
+      const row = db.events.insert({
+        eventId: uid("e"),
+        projectId,
+        type,
+        message: message.slice(0, 500),
+        createdAt: now(),
+      }) as any;
+      return eventFromRow(row);
+    });
   },
 
   events(projectId: string, limit = 30): ProjectEvent[] {
@@ -1680,7 +1779,7 @@ export const projectsRepository = {
     leaseMs: number,
   ): boolean {
     let claimed = false;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row || !allowed.includes(row.status)) return;
       const t = now();
@@ -1699,7 +1798,7 @@ export const projectsRepository = {
   },
 
   heartbeat(projectId: string, owner: string, leaseMs: number): void {
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row || row.leaseOwner !== owner) return;
       row.leaseUntil = now() + leaseMs;
@@ -1708,7 +1807,7 @@ export const projectsRepository = {
   },
 
   releaseLease(projectId: string, owner: string): void {
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row || row.leaseOwner !== owner) return;
       row.leaseOwner = "";
@@ -1719,7 +1818,7 @@ export const projectsRepository = {
 
   expireOwnedLeases(owner: string): number {
     let expired = 0;
-    db.transaction(() => {
+    databaseTransaction(() => {
       const rows = db.projects.select().all() as any[];
       for (const row of rows) {
         if (row.leaseOwner !== owner) continue;
@@ -1734,7 +1833,7 @@ export const projectsRepository = {
   recoverProjectWork(projectId: string, force = false): number {
     let recovered = 0;
     const t = now();
-    db.transaction(() => {
+    databaseTransaction(() => {
       const row = rowByProjectId(projectId);
       if (!row) return;
       const milestones = Array.isArray(row.milestones) ? row.milestones : [];
@@ -1803,7 +1902,7 @@ export const projectsRepository = {
   recoverExpiredWork(): number {
     let recovered = 0;
     const t = now();
-    db.transaction(() => {
+    databaseTransaction(() => {
       const rows = db.projects.select().all() as any[];
       for (const row of rows) {
         // Repair projects produced by the old funding-state bug: a fresh
