@@ -15,6 +15,18 @@ export function projectFloatCredits(): number {
   return positiveInt("PROJECT_FLOAT_CREDITS", 12, 0);
 }
 
+export function publicProjectCreateLimitPerHour(): number {
+  return positiveInt("PUBLIC_PROJECT_CREATE_LIMIT_PER_HOUR", 30, 1);
+}
+
+export function publicAgentActionLimitPerMinute(): number {
+  return positiveInt("PUBLIC_AGENT_ACTION_LIMIT_PER_MINUTE", 120, 1);
+}
+
+export function publicGameActionLimitPerMinute(): number {
+  return positiveInt("PUBLIC_GAME_ACTION_LIMIT_PER_MINUTE", 60, 1);
+}
+
 export function modelName(): string {
   return process.env.GAME_MODEL?.trim() || "gemini-3-flash-preview";
 }
@@ -97,6 +109,12 @@ export function runtimeConfigIssues(role: "web" | "worker"): string[] {
     issues.push("SLRD_MASTER_KEY is required when TREASURY_SEED_ENABLED=1");
   }
 
+  if (
+    production &&
+    role === "web" &&
+    !process.env.CROWDCLAW_ADMIN_TOKEN?.trim()
+  )
+    issues.push("CROWDCLAW_ADMIN_TOKEN is required in production");
   if (production && devFundingEnabled())
     issues.push("ALLOW_DEV_FUNDING must be 0 in production");
   if (production && databasePath() === ":memory:")

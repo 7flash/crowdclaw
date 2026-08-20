@@ -25,7 +25,7 @@ export async function GET(
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store, max-age=0",
       "content-security-policy":
-        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src data:; object-src 'none'; frame-ancestors 'self'",
+        "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src data:; object-src 'none'; frame-ancestors 'self'; sandbox allow-scripts allow-pointer-lock",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
       "permissions-policy":

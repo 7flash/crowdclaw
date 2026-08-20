@@ -15,8 +15,9 @@ export function isAdminRequest(request: Request): boolean {
     return Boolean(supplied) && secureEqual(supplied, configured);
   }
 
-  // Local development remains zero-config. Remote deployments must configure
-  // CROWDCLAW_ADMIN_TOKEN before process-control APIs become reachable.
+  // Host/URL metadata is not proof that the TCP peer is local. Production must
+  // always use an explicit secret; zero-config localhost auth is development-only.
+  if (process.env.NODE_ENV === "production") return false;
   const hostname = new URL(request.url).hostname.toLowerCase();
   return ["localhost", "127.0.0.1", "::1", "[::1]"].includes(hostname);
 }

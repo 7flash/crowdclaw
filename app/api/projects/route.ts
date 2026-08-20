@@ -5,6 +5,11 @@ import { json, jsonBody } from "../../../src/server/http";
 import { log } from "../../../src/server/log";
 import { createProject } from "../../../src/server/services/project-service";
 import { startProjectAgent } from "../../../src/server/agents/process-manager";
+import { publicProjectCreateLimitPerHour } from "../../../src/server/config";
+import {
+  rateLimitedResponse,
+  takeGlobalRateLimit,
+} from "../../../src/server/rate-limit";
 
 const CreateBody = z.object({ idea: z.string().trim().min(10).max(2000) });
 
@@ -22,6 +27,12 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const rate = takeGlobalRateLimit(
+    "public:projects:create",
+    publicProjectCreateLimitPerHour(),
+    60 * 60_000,
+  );
+  if (!rate.ok) return rateLimitedResponse(rate.retryAfterSeconds);
   try {
     const { idea } = CreateBody.parse(await jsonBody(request));
     const project = await measure(

@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@openai/codex-sdk": "latest",
+    "@solard/sdk": "latest",
     "bgrun": "3.14.0",
     "jsx-ai": "latest",
     "measure-fn": "4.0.5",
@@ -35,6 +36,7 @@
   "tradjs": {
     "serverOnly": [
       "@openai/codex-sdk",
+      "@solard/sdk",
       "viem",
       "bgrun",
       "jsx-ai",
