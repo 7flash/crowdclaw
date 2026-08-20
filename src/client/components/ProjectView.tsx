@@ -121,7 +121,7 @@ export function ProjectView(props: ProjectViewProps) {
   const playUrl =
     showLiveWorkspace || !currentArtifact
       ? `/api/projects/${encodeURIComponent(project.id)}/preview?rev=${encodeURIComponent(String(props.previewRevision))}`
-      : `/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}`;
+      : `/artifacts/${encodeURIComponent(project.id)}/${currentArtifact.version}?runtime=2`;
   const hasCommunity = Boolean(
     visibleSeed || supporters.length || openSteering.length,
   );

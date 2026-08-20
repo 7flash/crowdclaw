@@ -74,6 +74,8 @@ Your response format is strict:
 Hard contract:
 - Import { render } from "tradjs/client". Import "three" only when the rendering contract requires Three.js.
 - Default-export function mount(); mount once into #game-root and return cleanup.
+- IMPORTANT: TradJS render() takes a TradJS JSX/h() vnode, NOT an HTMLElement. Correct: render(<div><canvas /></div>, root) or render(h("div", null, ...), root). NEVER do const shell=document.createElement(...); render(shell, root). If you build a shell with DOM APIs, attach it with root.replaceChildren(shell) instead.
+- After mounting, query canvas/buttons from root (or from a directly attached shell), not from a detached node. mount() must synchronously leave at least one visible element inside #game-root.
 - No network requests, external assets, browser storage, or other imports.
 - Keyboard + pointer controls, visible controls, real game loop, objective/score, failure or win state, and restart.
 - Include a visible Restart/Retry control. A normal local reset handler is fine; CrowdClaw also injects a host-level restart fallback.
@@ -931,13 +933,13 @@ export async function buildMilestone(
       : "canvas");
   const renderingContract =
     project.done === 0
-      ? "RENDERING CONTRACT: This is v1. Use one HTML canvas with CanvasRenderingContext2D. Render/mount the shell once, draw imperatively every animation frame, and do not import Three.js yet. Include a visible Restart/Retry control; a normal local reset handler is acceptable because CrowdClaw injects a host-level restart fallback."
+      ? "RENDERING CONTRACT: This is v1. Use one HTML canvas with CanvasRenderingContext2D. Mount the shell once. If using TradJS render(), pass JSX/h() directly — never an HTMLElement. If using document.createElement(), attach it with root.replaceChildren(shell). Draw imperatively every animation frame, and do not import Three.js yet. Include a visible Restart/Retry control; a normal local reset handler is acceptable because CrowdClaw injects a host-level restart fallback."
       : milestoneRendering === "three_migration" ||
           (milestoneRendering === "three" && !previousUsesThree)
         ? "RENDERING CONTRACT: This roadmap phase requires the deliberate Three.js migration now. Import three, use THREE.WebGLRenderer, preserve the proven controls/game loop, and keep a visible Restart/Retry control working."
         : previousUsesThree
           ? "RENDERING CONTRACT: The game has already migrated to Three.js. Preserve the Three.js/WebGL renderer and build on it. Keep restart working."
-          : "RENDERING CONTRACT: Keep this revision on Canvas 2D. Render the shell once and draw with CanvasRenderingContext2D; do not migrate to Three.js until the roadmap reaches the migration phase. Keep a visible Restart/Retry control working.";
+          : "RENDERING CONTRACT: Keep this revision on Canvas 2D. Mount the shell once; TradJS render() must receive JSX/h(), never an HTMLElement. Direct DOM shells must use root.replaceChildren(shell). Draw with CanvasRenderingContext2D; do not migrate to Three.js until the roadmap reaches the migration phase. Keep a visible Restart/Retry control working.";
 
   const previousFeedback =
     project.error && !/^(?:quota|busy)$/i.test(project.error.trim())

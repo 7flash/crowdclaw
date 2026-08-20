@@ -12,11 +12,34 @@ const DEFAULT_TRADJS_RENDER_IMPORT =
  * is prompted to use the named render export; this normalization is only a
  * cheap guard before source reaches the workspace/compiler.
  */
-export function normalizeGameSource(source: string): string {
+function repairLegacyDomRender(source: string): string {
+  const domNodes = new Set(
+    [
+      ...source.matchAll(
+        /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*document\.createElement\s*\(/g,
+      ),
+    ].map((match) => match[1]),
+  );
+  if (!domNodes.size) return source;
   return source.replace(
+    /\brender\(\s*([A-Za-z_$][\w$]*)\s*,\s*([A-Za-z_$][\w$]*)\s*\)\s*;?/g,
+    (call, value: string, root: string) =>
+      domNodes.has(value) ? `${root}.replaceChildren(${value});` : call,
+  );
+}
+
+/**
+ * Normalize old generated sources before they are compiled or shown. Older
+ * agents sometimes passed a real HTMLElement to TradJS render(), which accepts
+ * JSX/h() vnodes rather than DOM nodes. Repair that historical pattern to a
+ * direct DOM mount so already-shipped versions remain playable.
+ */
+export function normalizeGameSource(source: string): string {
+  source = source.replace(
     DEFAULT_TRADJS_RENDER_IMPORT,
     'import { render } from "tradjs/client";',
   );
+  return repairLegacyDomRender(source);
 }
 
 export function validateGameSource(source: string): string[] {
@@ -25,20 +48,25 @@ export function validateGameSource(source: string): string[] {
   if (source.length < 300) issues.push("game source is too small");
   if (source.length > MAX_SOURCE_CHARS)
     issues.push(`game source exceeds ${MAX_SOURCE_CHARS} characters`);
-  if (
-    !/import\s*{[^}]*\brender\b[^}]*}\s*from\s*["']tradjs\/client["']/.test(
+  const importsTradRender =
+    /import\s*{[^}]*\brender\b[^}]*}\s*from\s*["']tradjs\/client["']/.test(
       source,
-    )
-  )
-    issues.push('game source must import { render } from "tradjs/client"');
+    );
+  const usesTradVNodeMount = /\brender\s*\(\s*(?:<|h\s*\()/.test(source);
+  const usesDirectDomMount =
+    /\.replaceChildren\s*\(|\.appendChild\s*\(|\.append\s*\(/.test(source);
+  if (/\brender\s*\(/.test(source) && !importsTradRender)
+    issues.push('render() requires { render } from "tradjs/client"');
   if (
     !/export\s+default\s+function\s+mount\b|export\s+default\s+mount\b/.test(
       source,
     )
   )
     issues.push("game source must default-export mount");
-  if (!/\brender\s*\(/.test(source))
-    issues.push("game source must render through tradjs/client");
+  if (!usesTradVNodeMount && !usesDirectDomMount)
+    issues.push(
+      "mount must attach visible DOM using render(<JSX />, root), render(h(...), root), or root.replaceChildren(...) ",
+    );
   if (
     /\b(?:fetch\s*\(|XMLHttpRequest\b|WebSocket\s*\(|EventSource\s*\(|sendBeacon\s*\(|localStorage\b|sessionStorage\b|indexedDB\b)/i.test(
       source,
@@ -145,23 +173,47 @@ const observeFit = () => {
   }
 };
 
+const showRuntimeError = (error: unknown) => {
+  const root = document.getElementById("game-root");
+  if (!root) return;
+  const message = error instanceof Error ? error.message : String(error || "unknown game error");
+  const panel = document.createElement("div");
+  panel.setAttribute("role", "alert");
+  panel.style.cssText = "position:absolute;inset:18px;display:grid;place-items:center;padding:24px;border:1px solid #ff5c2b66;border-radius:12px;background:#110b0bee;color:#ffd7ca;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;text-align:center;overflow:auto";
+  panel.textContent = "GAME RUNTIME ERROR\n\n" + message;
+  root.style.transform = "none";
+  root.replaceChildren(panel);
+};
+
 const restart = () => {
   if (restarting) return;
   restarting = true;
-  try { if (typeof cleanup === "function") cleanup(); } catch {}
-  const root = document.getElementById("game-root");
-  if (root) {
+  try {
+    try { if (typeof cleanup === "function") cleanup(); } catch {}
+    const root = document.getElementById("game-root");
+    if (!root) throw new Error("#game-root is missing");
     root.style.transform = "none";
     root.replaceChildren();
+    cleanup = mount();
+    if (!root.firstElementChild)
+      throw new Error("mount() completed without attaching any visible DOM to #game-root");
+    observeFit();
+    fitGame();
+    requestAnimationFrame(fitGame);
+    clearTimeout(fitTimeout);
+    fitTimeout = setTimeout(fitGame, 180);
+  } catch (error) {
+    console.error("CrowdClaw game runtime failed", error);
+    showRuntimeError(error);
+  } finally {
+    restarting = false;
   }
-  cleanup = mount();
-  observeFit();
-  fitGame();
-  requestAnimationFrame(fitGame);
-  clearTimeout(fitTimeout);
-  fitTimeout = setTimeout(fitGame, 180);
-  restarting = false;
 };
+
+addEventListener("error", (event) => {
+  if (event.error || event.message) showRuntimeError(event.error || event.message);
+});
+addEventListener("unhandledrejection", (event) => showRuntimeError(event.reason));
 
 (globalThis as any).__crowdclawRestart = restart;
 

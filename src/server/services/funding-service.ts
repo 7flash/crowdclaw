@@ -9,12 +9,25 @@ import {
 } from "../wallets/solana-rpc";
 import type { Project } from "../../shared/types";
 
+const checkedAt = new Map<string, number>();
+const FUNDING_HEARTBEAT_MS = 60_000;
+
+function sqliteBusy(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /SQLITE_BUSY|database (?:table )?is locked/i.test(message);
+}
+
 export async function syncProjectFunding(
   project: Project,
   force = false,
 ): Promise<Project> {
-  if (!force && Date.now() - project.lastFundingSyncAt < fundingSyncMs())
-    return project;
+  const now = Date.now();
+  const lastChecked = Math.max(
+    project.lastFundingSyncAt || 0,
+    checkedAt.get(project.id) || 0,
+  );
+  if (!force && now - lastChecked < fundingSyncMs()) return project;
+  checkedAt.set(project.id, now);
 
   return await measure(
     {
@@ -31,7 +44,10 @@ export async function syncProjectFunding(
           error instanceof Error
             ? error.message
             : String(error || "funding sync failed");
-        projectsRepository.setFundingError(project.id, message);
+        // Never answer a SQLite lock by immediately attempting another SQLite
+        // write. Keep the last good project snapshot and let the next poll retry.
+        if (!sqliteBusy(error))
+          projectsRepository.setFundingError(project.id, message);
         return projectsRepository.get(project.id) || project;
       },
     },
@@ -44,6 +60,17 @@ export async function syncProjectFunding(
         },
         () => getBalanceLamports(project.walletAddress),
       );
+      // Most waiting projects do not receive money on most polls. Avoid turning
+      // every balance check into a shared-SQLite write; persist a heartbeat only
+      // once per minute, or immediately when the balance/error state changes.
+      const unchanged =
+        lamports === project.onchainLamports && !project.fundingError;
+      if (
+        unchanged &&
+        Date.now() - project.lastFundingSyncAt < FUNDING_HEARTBEAT_MS
+      )
+        return project;
+
       const stored = await measure(
         {
           start: () => "Store funding",

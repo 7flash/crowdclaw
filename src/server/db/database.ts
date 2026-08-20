@@ -257,14 +257,35 @@ export const db = new Database(dbPath, {
 
 applySqlitePragmas(db);
 
-// Keep these helpers as repository API boundaries, but let SQLite itself handle
-// writer contention through WAL + busy_timeout.
+const SQLITE_RETRY_DELAYS_MS = [20, 60, 140];
+const SQLITE_RETRY_CELL = new Int32Array(new SharedArrayBuffer(4));
+
+function sqliteBusy(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  return /SQLITE_BUSY|database (?:table )?is locked/i.test(message);
+}
+
+function withSqliteRetry<T>(operation: () => T): T {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return operation();
+    } catch (error) {
+      const delay = SQLITE_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !sqliteBusy(error)) throw error;
+      Atomics.wait(SQLITE_RETRY_CELL, 0, 0, delay);
+    }
+  }
+}
+
+// WAL + busy_timeout remain the first line of defense. The short retry here is
+// a final cross-process backstop for the small SQLITE_BUSY windows that still
+// occur when multiple autonomous workers finish writes at the same instant.
 export function databaseWrite<T>(operation: () => T): T {
-  return operation();
+  return withSqliteRetry(operation);
 }
 
 export function databaseTransaction<T>(operation: () => T): T {
-  return db.transaction(operation) as T;
+  return withSqliteRetry(() => db.transaction(operation) as T);
 }
 
 export function probeDatabase(): void {

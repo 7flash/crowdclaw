@@ -1,4 +1,32 @@
 import { projectsRepository } from "../../../../src/server/db/project-repository";
+import {
+  compileGameHtml,
+  extractGameSource,
+  normalizeGameSource,
+} from "../../../../src/server/agent/game-artifact";
+
+const repairedHtml = new Map<string, Promise<string>>();
+
+async function playableHtml(artifact: {
+  sha256: string;
+  html: string;
+}): Promise<{ html: string; repaired: boolean }> {
+  const source = extractGameSource(artifact.html);
+  if (!source) return { html: artifact.html, repaired: false };
+  const normalized = normalizeGameSource(source);
+  if (normalized === source) return { html: artifact.html, repaired: false };
+  let pending = repairedHtml.get(artifact.sha256);
+  if (!pending) {
+    pending = compileGameHtml(normalized);
+    repairedHtml.set(artifact.sha256, pending);
+  }
+  try {
+    return { html: await pending, repaired: true };
+  } catch {
+    repairedHtml.delete(artifact.sha256);
+    return { html: artifact.html, repaired: false };
+  }
+}
 
 export async function GET(
   request: Request,
@@ -12,18 +40,26 @@ export async function GET(
 
   const url = new URL(request.url);
   const download = url.searchParams.get("download") === "1";
-  const etag = `"sha256-${artifact.sha256}"`;
+  const playable = await playableHtml(artifact);
+  const etag = `"sha256-${artifact.sha256}${playable.repaired ? "-runtime2" : ""}"`;
   if (request.headers.get("if-none-match") === etag) {
     return new Response(null, {
       status: 304,
-      headers: { etag, "cache-control": "public, max-age=31536000, immutable" },
+      headers: {
+        etag,
+        "cache-control": playable.repaired
+          ? "public, max-age=300, stale-while-revalidate=3600"
+          : "public, max-age=31536000, immutable",
+      },
     });
   }
 
-  return new Response(artifact.html, {
+  return new Response(playable.html, {
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": "public, max-age=31536000, immutable",
+      "cache-control": playable.repaired
+        ? "public, max-age=300, stale-while-revalidate=3600"
+        : "public, max-age=31536000, immutable",
       etag,
       "last-modified": new Date(artifact.createdAt).toUTCString(),
       "x-crowdclaw-project": artifact.projectId,

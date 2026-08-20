@@ -139,8 +139,8 @@ async function tick(): Promise<boolean> {
   if (!snapshot) return false;
 
   // Planning/build retry backoff may pause model work. Funding is different:
-  // while waiting for Robinhood ETH we still reconcile the project wallet every agent poll
-  // so a real inbound transfer can wake the project immediately.
+  // while waiting for SOL we keep reconciling the project wallet on the configured
+  // funding cadence so a real inbound transfer can wake the project promptly.
   if (
     snapshot.status !== "waiting_funds" &&
     snapshot.retryAt &&
@@ -174,17 +174,17 @@ async function tick(): Promise<boolean> {
     return true;
   }
 
-  // A waiting project is a funding watch. Force only the balance reconciliation;
-  // syncProjectFunding indexes signatures only when the observed balance grows.
-  // This makes direct supporter transfers visible within roughly one agent poll.
+  // A waiting project is a funding watch. Respect FUNDING_SYNC_MS so many idle
+  // agents do not hammer the same SQLite writer; signature indexing still only
+  // runs when the observed Solana balance actually grows.
   if (snapshot.status === "waiting_funds") {
     let funded = await measure(
       {
-        start: () => "Watch project ETH",
+        start: () => "Watch project SOL",
         end: projectSummary,
         projectId,
       },
-      () => syncProjectFunding(snapshot!, true),
+      () => syncProjectFunding(snapshot!, false),
     );
     funded = projectsRepository.markQueuedIfFunded(funded.id) || funded;
     if (funded.status === "queued") {
