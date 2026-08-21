@@ -28,6 +28,7 @@ import type {
 } from "../../shared/types";
 import { log } from "../log";
 import { validateArtifactHtml } from "./output";
+import { validateGameRuntime } from "./runtime-validation";
 import {
   ensureWorkspaceGameSource,
   readWorkspaceGameSource,
@@ -74,7 +75,9 @@ Your response format is strict:
 Hard contract:
 - Import { render } from "tradjs/client". Import "three" only when the rendering contract requires Three.js.
 - Default-export function mount(); mount once into #game-root and return cleanup.
+- NEVER call mount() yourself at module scope, from DOMContentLoaded, or anywhere else. CrowdClaw imports and invokes mount().
 - IMPORTANT: TradJS render() takes a TradJS JSX/h() vnode, NOT an HTMLElement. Correct: render(<div><canvas /></div>, root) or render(h("div", null, ...), root). NEVER do const shell=document.createElement(...); render(shell, root). If you build a shell with DOM APIs, attach it with root.replaceChildren(shell) instead.
+- If mount() uses TradJS render(..., root), cleanup MUST unmount with render(null, root). Never clear a TradJS-managed root with root.replaceChildren().
 - After mounting, query canvas/buttons from root (or from a directly attached shell), not from a detached node. mount() must synchronously leave at least one visible element inside #game-root.
 - No network requests, external assets, browser storage, or other imports.
 - Keyboard + pointer controls, visible controls, real game loop, objective/score, failure or win state, and restart.
@@ -708,6 +711,7 @@ async function executeWorkspaceTool(
     const html = await compileGameHtml(normalizedSource);
     const artifactIssues = validateArtifactHtml(html);
     if (artifactIssues.length) throw new Error(artifactIssues.join("; "));
+    await validateGameRuntime(html);
     writeWorkspaceFile(projectId, "game.tsx", normalizedSource);
     context.state.validationError = undefined;
     context.state.compiledHtml = html;

@@ -67,6 +67,14 @@ export function validateGameSource(source: string): string[] {
     issues.push(
       "mount must attach visible DOM using render(<JSX />, root), render(h(...), root), or root.replaceChildren(...) ",
     );
+  if (/\bmount\s*\(\s*\)\s*;/.test(source))
+    issues.push(
+      "game source must not call mount(); CrowdClaw imports and invokes the default mount export",
+    );
+  if (usesTradVNodeMount && /\broot\.replaceChildren\s*\(\s*\)/.test(source))
+    issues.push(
+      "TradJS-mounted games must unmount with render(null, root), not root.replaceChildren()",
+    );
   if (
     /\b(?:fetch\s*\(|XMLHttpRequest\b|WebSocket\s*\(|EventSource\s*\(|sendBeacon\s*\(|localStorage\b|sessionStorage\b|indexedDB\b)/i.test(
       source,
@@ -179,8 +187,16 @@ const showRuntimeError = (error: unknown) => {
   const message = error instanceof Error ? error.message : String(error || "unknown game error");
   const panel = document.createElement("div");
   panel.setAttribute("role", "alert");
-  panel.style.cssText = "position:absolute;inset:18px;display:grid;place-items:center;padding:24px;border:1px solid #ff5c2b66;border-radius:12px;background:#110b0bee;color:#ffd7ca;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;text-align:center;overflow:auto";
-  panel.textContent = "GAME RUNTIME ERROR\n\n" + message;
+  panel.setAttribute("data-crowdclaw-runtime-error", "1");
+  panel.style.cssText = "position:absolute;inset:18px;display:grid;place-items:center;gap:14px;padding:24px;border:1px solid #ff5c2b66;border-radius:12px;background:#110b0bee;color:#ffd7ca;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;text-align:center;overflow:auto";
+  const text = document.createElement("div");
+  text.textContent = "GAME RUNTIME ERROR\n\n" + message;
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.setAttribute("data-crowdclaw-restart", "1");
+  retry.textContent = "RETRY";
+  retry.style.cssText = "padding:9px 14px;border:1px solid #ff8a66;border-radius:8px;background:#29130d;color:#ffd7ca;font:700 12px ui-monospace,SFMono-Regular,Menlo,monospace;cursor:pointer";
+  panel.append(text, retry);
   root.style.transform = "none";
   root.replaceChildren(panel);
 };
@@ -219,19 +235,16 @@ addEventListener("unhandledrejection", (event) => showRuntimeError(event.reason)
 
 const onHostRestartKey = (event: KeyboardEvent) => {
   const target = event.target as HTMLElement | null;
-  if (event.code !== "KeyR" || event.repeat || target?.matches?.("input, textarea, select, [contenteditable=true]")) return;
+  const runtimeError = document.querySelector("[data-crowdclaw-runtime-error]");
+  if (!runtimeError || event.code !== "KeyR" || event.repeat || target?.matches?.("input, textarea, select, [contenteditable=true]")) return;
   event.preventDefault();
   restart();
 };
 
 const onHostRestartClick = (event: MouseEvent) => {
   const origin = event.target instanceof Element ? event.target : null;
-  const control = origin?.closest?.("button, [role=button], a") as HTMLElement | null;
+  const control = origin?.closest?.("[data-crowdclaw-restart]") as HTMLElement | null;
   if (!control) return;
-  const label = ((control.getAttribute("aria-label") || "") + " " + (control.textContent || "")).replace(/\s+/g, " ").trim();
-  const explicit = control.hasAttribute("data-crowdclaw-restart");
-  const restartLabel = /\b(?:restart|retry|try again|play again|new game)\b/i.test(label);
-  if (!explicit && !restartLabel) return;
   event.preventDefault();
   event.stopImmediatePropagation();
   restart();

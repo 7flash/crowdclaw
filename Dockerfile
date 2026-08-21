@@ -1,6 +1,12 @@
 FROM oven/bun:1 AS runtime
 WORKDIR /srv/crowdclaw
 
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends chromium ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+ENV CROWDCLAW_CHROMIUM_PATH=/usr/bin/chromium
+
 COPY package.json ./
 RUN bun install --production
 COPY . .
